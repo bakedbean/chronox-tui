@@ -71,6 +71,15 @@ fn repin(events: &[ChangeEvent], pinned: Option<&ChangeSource>, old: usize) -> u
     old.min(events.len().saturating_sub(1))
 }
 
+/// Build the full, un-clipped styled diff for one change. Re-reads the session
+/// log for fidelity, falling back to the bounded `detail` when the log is
+/// unavailable.
+fn build_diff_lines(ev: &ChangeEvent) -> Vec<Line<'static>> {
+    let detail = load_full_change(ev).unwrap_or_else(|| ev.detail.clone());
+    let base = resolve_line_in_file(&ev.file_path, &detail);
+    change_detail_lines_styled(&detail, base, lang_for_path(&ev.file_path))
+}
+
 impl App {
     /// Construct without touching the filesystem. `new` wraps this and refreshes.
     pub(crate) fn bare(worktree: PathBuf) -> Self {
@@ -177,8 +186,51 @@ impl App {
 }
 
 impl App {
-    // Temporary stub; real implementation lands in Task 4.
-    fn refresh(&mut self) {}
+    /// Construct for `worktree` and load its current timeline.
+    pub fn new(worktree: PathBuf) -> Self {
+        let mut app = Self::bare(worktree);
+        app.refresh();
+        app
+    }
+
+    /// Re-scan the worktree's session logs, rebuild the merged event list, and
+    /// re-pin the cursor to the same change. Cheap to call on a tick — the
+    /// chronox `Timeline` reparses only files whose size/mtime changed.
+    fn refresh(&mut self) {
+        let pinned = self.events.get(self.selected).map(|e| e.source.clone());
+        let files = claude_session_files(&self.worktree);
+        self.timeline.refresh(&files);
+        self.events = self.timeline.events().to_vec();
+        self.selected = repin(&self.events, pinned.as_ref(), self.selected);
+    }
+
+    /// Styled diff lines for the current selection, built lazily and cached by
+    /// the selected change's `ChangeSource` (robust across refresh + selection
+    /// changes).
+    pub fn diff_lines(&mut self) -> &[Line<'static>] {
+        let src = self.events.get(self.selected).map(|e| e.source.clone());
+        let needs = match (&self.diff_cache, &src) {
+            (Some((cached, _)), Some(s)) => cached != s,
+            _ => true,
+        };
+        if needs {
+            match src {
+                Some(s) => {
+                    let lines = self
+                        .events
+                        .get(self.selected)
+                        .map(build_diff_lines)
+                        .unwrap_or_default();
+                    self.diff_cache = Some((s, lines));
+                }
+                None => self.diff_cache = None,
+            }
+        }
+        self.diff_cache
+            .as_ref()
+            .map(|(_, l)| l.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 #[cfg(test)]
@@ -329,5 +381,29 @@ mod tests {
         assert!(app.resizing);
         app.apply(AppAction::EndResize);
         assert!(!app.resizing);
+    }
+
+    #[test]
+    fn new_on_empty_worktree_has_no_events() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let app = App::new(dir.path().to_path_buf());
+        assert!(app.events().is_empty());
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn diff_lines_falls_back_to_detail_when_log_missing() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        // source.session_file does not exist → load_full_change returns None →
+        // we fall back to ev.detail (an Edit), which yields at least one diff line.
+        app.set_events_for_test_pub(vec![ev(1, "/wt/a.rs", 1)]);
+        let lines = app.diff_lines().to_vec();
+        assert!(!lines.is_empty(), "fallback detail must still render a diff");
+    }
+
+    #[test]
+    fn diff_lines_empty_when_no_events() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        assert!(app.diff_lines().is_empty());
     }
 }
