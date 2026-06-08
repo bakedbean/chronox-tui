@@ -258,9 +258,13 @@ mod tests {
 
     #[test]
     fn repin_keeps_same_event_when_new_events_prepended() {
-        let old_events = vec![ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)];
+        let old_events = [ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)];
         let pinned = old_events[1].source.clone(); // selected b.rs at index 1
-        let new_events = vec![ev(3, "/wt/new.rs", 9), ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)];
+        let new_events = vec![
+            ev(3, "/wt/new.rs", 9),
+            ev(2, "/wt/a.rs", 1),
+            ev(1, "/wt/b.rs", 2),
+        ];
         assert_eq!(repin(&new_events, Some(&pinned), 1), 2);
     }
 
@@ -398,7 +402,10 @@ mod tests {
         // we fall back to ev.detail (an Edit), which yields at least one diff line.
         app.set_events_for_test_pub(vec![ev(1, "/wt/a.rs", 1)]);
         let lines = app.diff_lines().to_vec();
-        assert!(!lines.is_empty(), "fallback detail must still render a diff");
+        assert!(
+            !lines.is_empty(),
+            "fallback detail must still render a diff"
+        );
     }
 
     #[test]

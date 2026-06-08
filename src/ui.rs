@@ -74,7 +74,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
 
 fn pane_block(title: &str, focused: bool) -> Block<'static> {
     let border_style = if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -91,7 +93,11 @@ fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
 
     let rows = inner.height as usize;
     let len = app.events().len();
-    let scroll = clamp_scroll(adjust_scroll(app.list_scroll, app.selected, rows, len), len, rows);
+    let scroll = clamp_scroll(
+        adjust_scroll(app.list_scroll, app.selected, rows, len),
+        len,
+        rows,
+    );
     app.list_scroll = scroll;
     app.last_visible_rows = rows;
 

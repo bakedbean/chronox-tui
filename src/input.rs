@@ -98,10 +98,16 @@ mod tests {
     fn arrows_and_vim_keys_map_to_nav() {
         let app = App::bare(PathBuf::from("/wt"));
         assert_eq!(map(key(KeyCode::Down), &app), AppAction::Nav(NavKey::Down));
-        assert_eq!(map(key(KeyCode::Char('j')), &app), AppAction::Nav(NavKey::Down));
+        assert_eq!(
+            map(key(KeyCode::Char('j')), &app),
+            AppAction::Nav(NavKey::Down)
+        );
         assert_eq!(map(key(KeyCode::Up), &app), AppAction::Nav(NavKey::Up));
         assert_eq!(map(key(KeyCode::Tab), &app), AppAction::ToggleFocus);
-        assert_eq!(map(key(KeyCode::Char('[')), &app), AppAction::NudgeSplit(-1));
+        assert_eq!(
+            map(key(KeyCode::Char('[')), &app),
+            AppAction::NudgeSplit(-1)
+        );
         assert_eq!(map(key(KeyCode::Char(']')), &app), AppAction::NudgeSplit(1));
     }
 
@@ -147,8 +153,17 @@ mod tests {
         let mut app = App::bare(PathBuf::from("/wt"));
         app.last_area = Rect::new(0, 0, 100, 30);
         app.list_width = 30; // diff starts right of column 30
-        assert_eq!(map(mouse(MouseEventKind::ScrollDown, 60), &app), AppAction::ScrollDiff(3));
-        assert_eq!(map(mouse(MouseEventKind::ScrollUp, 60), &app), AppAction::ScrollDiff(-3));
-        assert_eq!(map(mouse(MouseEventKind::ScrollDown, 10), &app), AppAction::None);
+        assert_eq!(
+            map(mouse(MouseEventKind::ScrollDown, 60), &app),
+            AppAction::ScrollDiff(3)
+        );
+        assert_eq!(
+            map(mouse(MouseEventKind::ScrollUp, 60), &app),
+            AppAction::ScrollDiff(-3)
+        );
+        assert_eq!(
+            map(mouse(MouseEventKind::ScrollDown, 10), &app),
+            AppAction::None
+        );
     }
 }
