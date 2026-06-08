@@ -38,6 +38,9 @@ pub enum AppAction {
     StartResize,
     Resize(u16),
     EndResize,
+    /// Open the selected change's file in `$EDITOR`. Side-effecting: handled by
+    /// the run loop (which owns the terminal), not by `App::apply`.
+    OpenInEditor,
     Tick,
     None,
 }
@@ -55,6 +58,9 @@ pub struct App {
     pub last_area: Rect,
     pub last_visible_rows: usize,
     diff_cache: Option<(ChangeSource, Vec<Line<'static>>)>,
+    /// Transient one-line message for the footer (e.g. an editor-launch error),
+    /// dismissed on the next keypress.
+    status: Option<String>,
     pub should_quit: bool,
 }
 
@@ -96,6 +102,7 @@ impl App {
             last_area: Rect::default(),
             last_visible_rows: 0,
             diff_cache: None,
+            status: None,
             should_quit: false,
         }
     }
@@ -106,6 +113,33 @@ impl App {
 
     pub fn selected_event(&self) -> Option<&ChangeEvent> {
         self.events.get(self.selected)
+    }
+
+    /// Absolute path and 1-based line of the current selection, for handing to
+    /// an external editor. Reuses the same full-change + line-resolution path
+    /// the diff view uses, so the editor lands on the line the diff shows.
+    /// `resolve_line_in_file` returns 1 when the file is unreadable, so the
+    /// line is always >= 1.
+    pub fn selected_path_and_line(&self) -> Option<(PathBuf, u32)> {
+        let ev = self.events.get(self.selected)?;
+        let detail = load_full_change(ev).unwrap_or_else(|| ev.detail.clone());
+        let line = resolve_line_in_file(&ev.file_path, &detail);
+        Some((ev.file_path.clone(), line))
+    }
+
+    /// The transient footer message, if any.
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    /// Set the transient footer message (shown until the next keypress).
+    pub fn set_status(&mut self, msg: String) {
+        self.status = Some(msg);
+    }
+
+    /// Clear the transient footer message.
+    pub fn clear_status(&mut self) {
+        self.status = None;
     }
 }
 
@@ -140,6 +174,8 @@ impl App {
                 self.resize_to(target);
             }
             AppAction::EndResize => self.resizing = false,
+            // Handled by the run loop, which owns the terminal; no state change.
+            AppAction::OpenInEditor => {}
             AppAction::None => {}
         }
     }
@@ -421,6 +457,32 @@ mod tests {
     fn diff_lines_empty_when_no_events() {
         let mut app = App::bare(PathBuf::from("/wt"));
         assert!(app.diff_lines().is_empty());
+    }
+
+    #[test]
+    fn selected_path_and_line_returns_path_and_line() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev(1, "/wt/a.rs", 1)]);
+        // The source log is absent, so resolve_line_in_file falls back to 1.
+        let (path, line) = app.selected_path_and_line().expect("a selection exists");
+        assert_eq!(path, PathBuf::from("/wt/a.rs"));
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn selected_path_and_line_none_when_no_events() {
+        let app = App::bare(PathBuf::from("/wt"));
+        assert!(app.selected_path_and_line().is_none());
+    }
+
+    #[test]
+    fn status_sets_and_clears() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        assert_eq!(app.status(), None);
+        app.set_status("nope".into());
+        assert_eq!(app.status(), Some("nope"));
+        app.clear_status();
+        assert_eq!(app.status(), None);
     }
 
     #[test]
