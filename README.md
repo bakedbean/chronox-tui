@@ -26,10 +26,18 @@ it (and make a few edits) first, or you'll see the empty state.
 | `g`/`G`, `Home`/`End` | List: jump to top / bottom |
 | `Tab` | Toggle focus between the list and the diff |
 | `Enter` | Focus the diff pane |
+| `e` | Open the selected file in `$VISUAL`/`$EDITOR` at the changed line |
 | `[` / `]` | Nudge the split divider left / right |
 | mouse drag on the divider | Resize the split |
 | mouse wheel over the diff | Scroll the diff |
 | `q`, `Esc`, `Ctrl-C` | Quit |
+
+## Note on the editor key
+
+`e` resolves your editor from `$VISUAL`, then `$EDITOR`, falling back to `vi`,
+and opens the file at the changed line using the `+N file` convention
+(vim/neovim, nano, emacs, …). Editors that don't accept `+N` for a line number
+(e.g. VS Code) will open the file but ignore the line.
 
 ## Note on mouse capture
 
