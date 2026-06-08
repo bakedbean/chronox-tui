@@ -183,6 +183,13 @@ impl App {
             .max(MIN_LIST);
         self.list_width = target.clamp(MIN_LIST, max);
     }
+
+    /// Re-clamp the split width to the current `last_area` — called each frame so
+    /// a terminal resize (or an oversized default on first draw) can't push the
+    /// divider off-screen or squeeze the diff pane below its minimum.
+    pub fn reclamp_split(&mut self) {
+        self.resize_to(self.list_width);
+    }
 }
 
 impl App {
@@ -208,6 +215,8 @@ impl App {
     /// the selected change's `ChangeSource` (robust across refresh + selection
     /// changes).
     pub fn diff_lines(&mut self) -> &[Line<'static>] {
+        // Safe to key on ChangeSource: Claude Code session logs are append-only,
+        // so a given (file, line, index) is written once and never mutated.
         let src = self.events.get(self.selected).map(|e| e.source.clone());
         let needs = match (&self.diff_cache, &src) {
             (Some((cached, _)), Some(s)) => cached != s,
@@ -412,5 +421,19 @@ mod tests {
     fn diff_lines_empty_when_no_events() {
         let mut app = App::bare(PathBuf::from("/wt"));
         assert!(app.diff_lines().is_empty());
+    }
+
+    #[test]
+    fn reclamp_split_shrinks_to_fit_small_area() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.list_width = 32; // the default
+        app.last_area = Rect::new(0, 0, 40, 10); // max = 40 - MIN_DIFF(24) - 1 = 15 → floored to MIN_LIST
+        app.reclamp_split();
+        assert_eq!(app.list_width, MIN_LIST);
+        // A comfortably wide area leaves the width untouched.
+        app.list_width = 32;
+        app.last_area = Rect::new(0, 0, 120, 10);
+        app.reclamp_split();
+        assert_eq!(app.list_width, 32);
     }
 }

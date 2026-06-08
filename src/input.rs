@@ -44,7 +44,7 @@ fn map_key(k: KeyEvent) -> AppAction {
 }
 
 fn map_mouse(m: MouseEvent, app: &App) -> AppAction {
-    let divider_col = app.last_area.x + app.list_width;
+    let divider_col = app.last_area.x.saturating_add(app.list_width);
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if m.column.abs_diff(divider_col) <= 1 {

@@ -15,6 +15,7 @@ use crate::app::{App, Focus};
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     app.last_area = area;
+    app.reclamp_split();
 
     let chunks = Layout::vertical([
         Constraint::Length(1), // title
