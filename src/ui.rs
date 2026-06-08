@@ -62,13 +62,11 @@ fn render_title(f: &mut Frame, area: Rect, app: &App) {
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     // A transient status (e.g. an editor-launch error) takes over the footer
     // until the next keypress; otherwise show the key hints.
-    let text = match app.status() {
-        Some(status) => status.to_string(),
+    let text: &str = match app.status() {
+        Some(status) => status,
         None => match app.focus {
-            Focus::List => " ↑↓ move · e edit · Tab focus diff · [ ] resize · q quit ".to_string(),
-            Focus::Diff => {
-                " ↑↓/PgUp/PgDn scroll · e edit · Tab focus list · [ ] resize · q quit ".to_string()
-            }
+            Focus::List => " ↑↓ move · e edit · Tab focus diff · [ ] resize · q quit ",
+            Focus::Diff => " ↑↓/PgUp/PgDn scroll · e edit · Tab focus list · [ ] resize · q quit ",
         },
     };
     f.render_widget(

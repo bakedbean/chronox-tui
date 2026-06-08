@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -34,7 +36,7 @@ fn main() -> io::Result<()> {
     let mut terminal = setup_terminal()?;
     let app = App::new(worktree);
     let result = run(&mut terminal, app);
-    restore_terminal(&mut terminal)?;
+    leave_screen()?;
     result
 }
 
@@ -61,11 +63,6 @@ fn leave_screen() -> io::Result<()> {
 fn setup_terminal() -> io::Result<Term> {
     enter_screen()?;
     Terminal::new(CrosstermBackend::new(io::stdout()))
-}
-
-fn restore_terminal(terminal: &mut Term) -> io::Result<()> {
-    leave_screen()?;
-    terminal.show_cursor()
 }
 
 /// Restore the terminal even on panic, so a crash never leaves it wedged.
@@ -124,9 +121,12 @@ fn run(terminal: &mut Term, mut app: App) -> io::Result<()> {
 
         if event::poll(POLL)? {
             let ev: Event = event::read()?;
+            // A real keypress dismisses a prior transient status; mouse motion,
+            // scroll, and key-release events leave it on screen.
+            if matches!(&ev, Event::Key(k) if k.kind == KeyEventKind::Press) {
+                app.clear_status();
+            }
             let action = input::map(ev, &app);
-            // Any keypress dismisses a prior transient status.
-            app.clear_status();
             match action {
                 AppAction::OpenInEditor => {
                     if let Err(msg) = edit_selected(terminal, &app) {
