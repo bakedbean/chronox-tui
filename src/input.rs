@@ -33,6 +33,7 @@ fn map_key(k: KeyEvent) -> AppAction {
         KeyCode::Down | KeyCode::Char('j') => AppAction::Nav(NavKey::Down),
         KeyCode::Char('g') | KeyCode::Home => AppAction::Nav(NavKey::Top),
         KeyCode::Char('G') | KeyCode::End => AppAction::Nav(NavKey::Bottom),
+        KeyCode::Char('e') => AppAction::OpenInEditor,
         KeyCode::Enter => AppAction::Nav(NavKey::Enter),
         KeyCode::Tab => AppAction::ToggleFocus,
         KeyCode::PageUp => AppAction::ScrollDiff(-10),
@@ -109,6 +110,12 @@ mod tests {
             AppAction::NudgeSplit(-1)
         );
         assert_eq!(map(key(KeyCode::Char(']')), &app), AppAction::NudgeSplit(1));
+    }
+
+    #[test]
+    fn e_opens_editor() {
+        let app = App::bare(PathBuf::from("/wt"));
+        assert_eq!(map(key(KeyCode::Char('e')), &app), AppAction::OpenInEditor);
     }
 
     #[test]
