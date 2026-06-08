@@ -100,6 +100,87 @@ impl App {
     }
 }
 
+impl App {
+    /// Test seam — crate-visible so `ui.rs` and `input.rs` tests can seed events
+    /// without touching the filesystem.
+    #[cfg(test)]
+    pub(crate) fn set_events_for_test_pub(&mut self, events: Vec<ChangeEvent>) {
+        self.events = events;
+    }
+
+    /// Single entry point for all state changes.
+    pub fn apply(&mut self, action: AppAction) {
+        match action {
+            AppAction::Quit => self.should_quit = true,
+            AppAction::Tick => self.refresh(),
+            AppAction::ToggleFocus => {
+                self.focus = match self.focus {
+                    Focus::List => Focus::Diff,
+                    Focus::Diff => Focus::List,
+                };
+            }
+            AppAction::Nav(key) => self.on_nav(key),
+            AppAction::ScrollDiff(delta) => self.scroll_diff(delta),
+            AppAction::NudgeSplit(delta) => {
+                let target = (self.list_width as i32 + delta).max(0) as u16;
+                self.resize_to(target);
+            }
+            AppAction::StartResize => self.resizing = true,
+            AppAction::Resize(col) => {
+                let target = col.saturating_sub(self.last_area.x);
+                self.resize_to(target);
+            }
+            AppAction::EndResize => self.resizing = false,
+            AppAction::None => {}
+        }
+    }
+
+    fn on_nav(&mut self, key: NavKey) {
+        // In Diff focus, ↑/↓ scroll the diff instead of moving the list.
+        if self.focus == Focus::Diff {
+            match key {
+                NavKey::Up => return self.scroll_diff(-1),
+                NavKey::Down => return self.scroll_diff(1),
+                NavKey::Esc => {
+                    self.should_quit = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let (new_sel, act) = nav(self.selected, key, self.events.len());
+        match act {
+            NavAction::Exit => self.should_quit = true,
+            NavAction::Open(_) => self.focus = Focus::Diff,
+            NavAction::None => {}
+        }
+        if new_sel != self.selected {
+            self.selected = new_sel;
+            self.diff_scroll = 0;
+        }
+    }
+
+    fn scroll_diff(&mut self, delta: i32) {
+        let next = self.diff_scroll as i64 + delta as i64;
+        self.diff_scroll = next.max(0) as usize;
+        // The upper bound is clamped against the rendered diff length at draw time.
+    }
+
+    fn resize_to(&mut self, target: u16) {
+        let max = self
+            .last_area
+            .width
+            .saturating_sub(MIN_DIFF + 1)
+            .max(MIN_LIST);
+        self.list_width = target.clamp(MIN_LIST, max);
+    }
+}
+
+impl App {
+    // Temporary stub; real implementation lands in Task 4.
+    fn refresh(&mut self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +226,108 @@ mod tests {
     #[test]
     fn repin_empty_is_zero() {
         assert_eq!(repin(&[], None, 3), 0);
+    }
+
+    #[test]
+    fn list_focus_moves_selection() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![
+            ev(3, "/wt/a.rs", 1),
+            ev(2, "/wt/b.rs", 2),
+            ev(1, "/wt/c.rs", 3),
+        ]);
+        app.focus = Focus::List;
+        app.apply(AppAction::Nav(NavKey::Down));
+        assert_eq!(app.selected, 1);
+        app.apply(AppAction::Nav(NavKey::Bottom));
+        assert_eq!(app.selected, 2);
+        app.apply(AppAction::Nav(NavKey::Top));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn moving_selection_resets_diff_scroll() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)]);
+        app.focus = Focus::List;
+        app.diff_scroll = 7;
+        app.apply(AppAction::Nav(NavKey::Down));
+        assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn diff_focus_routes_arrows_to_scroll() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev(1, "/wt/a.rs", 1)]);
+        app.focus = Focus::Diff;
+        app.diff_scroll = 3;
+        app.apply(AppAction::Nav(NavKey::Up));
+        assert_eq!(app.diff_scroll, 2);
+        assert_eq!(app.selected, 0, "diff focus must not move the list");
+        app.apply(AppAction::Nav(NavKey::Down));
+        assert_eq!(app.diff_scroll, 3);
+    }
+
+    #[test]
+    fn scroll_diff_floors_at_zero() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.diff_scroll = 0;
+        app.apply(AppAction::ScrollDiff(-5));
+        assert_eq!(app.diff_scroll, 0);
+        app.apply(AppAction::ScrollDiff(4));
+        assert_eq!(app.diff_scroll, 4);
+    }
+
+    #[test]
+    fn toggle_focus_flips() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        assert_eq!(app.focus, Focus::List);
+        app.apply(AppAction::ToggleFocus);
+        assert_eq!(app.focus, Focus::Diff);
+        app.apply(AppAction::ToggleFocus);
+        assert_eq!(app.focus, Focus::List);
+    }
+
+    #[test]
+    fn esc_and_quit_set_should_quit() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.apply(AppAction::Nav(NavKey::Esc));
+        assert!(app.should_quit);
+        let mut app2 = App::bare(PathBuf::from("/wt"));
+        app2.apply(AppAction::Quit);
+        assert!(app2.should_quit);
+    }
+
+    #[test]
+    fn resize_clamps_to_bounds() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.last_area = Rect::new(0, 0, 100, 30); // max = 100 - MIN_DIFF(24) - 1 = 75
+        app.apply(AppAction::Resize(5)); // below MIN_LIST
+        assert_eq!(app.list_width, MIN_LIST);
+        app.apply(AppAction::Resize(90)); // above max
+        assert_eq!(app.list_width, 75);
+        app.apply(AppAction::Resize(40));
+        assert_eq!(app.list_width, 40);
+    }
+
+    #[test]
+    fn nudge_split_respects_bounds() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.last_area = Rect::new(0, 0, 100, 30);
+        app.list_width = MIN_LIST;
+        app.apply(AppAction::NudgeSplit(-1));
+        assert_eq!(app.list_width, MIN_LIST, "cannot go below MIN_LIST");
+        app.apply(AppAction::NudgeSplit(1));
+        assert_eq!(app.list_width, MIN_LIST + 1);
+    }
+
+    #[test]
+    fn resize_flag_transitions() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        assert!(!app.resizing);
+        app.apply(AppAction::StartResize);
+        assert!(app.resizing);
+        app.apply(AppAction::EndResize);
+        assert!(!app.resizing);
     }
 }
