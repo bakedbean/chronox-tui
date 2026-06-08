@@ -6,11 +6,36 @@ timeline of file changes a Claude Code agent made in a worktree, with a
 syntax-highlighted diff of the selected change. The timeline updates live while
 a session is running.
 
+## Install
+
+To run `chronox-tui` from anywhere, build a release binary and symlink it onto
+your `PATH`:
+
+```bash
+./install.sh
+```
+
+This builds `target/release/chronox-tui` and links it to
+`~/.local/bin/chronox-tui` (override with `BIN_DIR=~/bin ./install.sh`). The
+symlink points at the build output, so to update after pulling new changes just
+rebuild:
+
+```bash
+git pull && cargo build --release   # or re-run ./install.sh
+```
+
 ## Run
 
 ```bash
 cargo run                      # current directory
 cargo run -- /path/to/worktree # an explicit worktree
+```
+
+Once installed, `cargo run` becomes just `chronox-tui`:
+
+```bash
+chronox-tui                      # current directory
+chronox-tui /path/to/worktree    # an explicit worktree
 ```
 
 The worktree must have Claude Code session logs
