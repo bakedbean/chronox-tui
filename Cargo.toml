@@ -1,0 +1,12 @@
+[package]
+name = "chronox-tui"
+version = "0.1.0"
+edition = "2024"
+description = "A ratatui TUI for the chronox change timeline."
+
+[dependencies]
+ratatui = "0.29"
+chronox = { git = "https://github.com/bakedbean/chronox", rev = "deacc9ad8698acd95dbb1fb0aea35b1becf5e8bd" }
+
+[dev-dependencies]
+tempfile = "3"
