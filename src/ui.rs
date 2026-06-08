@@ -60,13 +60,20 @@ fn render_title(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
-    let hint = match app.focus {
-        Focus::List => " ↑↓ move · Tab focus diff · [ ] resize · q quit ",
-        Focus::Diff => " ↑↓/PgUp/PgDn scroll · Tab focus list · [ ] resize · q quit ",
+    // A transient status (e.g. an editor-launch error) takes over the footer
+    // until the next keypress; otherwise show the key hints.
+    let text = match app.status() {
+        Some(status) => status.to_string(),
+        None => match app.focus {
+            Focus::List => " ↑↓ move · e edit · Tab focus diff · [ ] resize · q quit ".to_string(),
+            Focus::Diff => {
+                " ↑↓/PgUp/PgDn scroll · e edit · Tab focus list · [ ] resize · q quit ".to_string()
+            }
+        },
     };
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            hint,
+            text,
             Style::default().add_modifier(Modifier::DIM),
         ))),
         area,
@@ -209,6 +216,24 @@ mod tests {
         let buf = draw_app(&mut app, 80, 12);
         // Body starts at y=1 (after the title row); separator column == list_width.
         assert_eq!(buf[(20u16, 3u16)].symbol(), "│");
+    }
+
+    #[test]
+    fn footer_advertises_the_edit_key() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        let buf = draw_app(&mut app, 80, 10);
+        assert!(buffer_text(&buf).contains("e edit"));
+    }
+
+    #[test]
+    fn footer_shows_status_when_set() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_status("could not launch 'nope'".into());
+        let buf = draw_app(&mut app, 80, 10);
+        let text = buffer_text(&buf);
+        assert!(text.contains("could not launch 'nope'"));
+        // The status replaces the hint while it is visible.
+        assert!(!text.contains("e edit"));
     }
 
     #[test]
