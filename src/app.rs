@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use chronox::extract::{claude_session_files, load_full_change, resolve_line_in_file};
 use chronox::nav::nav;
 use chronox::{
-    ChangeEvent, ChangeSource, NavAction, NavKey, Timeline, change_detail_lines_styled,
-    lang_for_path,
+    ChangeEvent, ChangeSource, NavAction, NavKey, SideRow, Timeline,
+    change_detail_lines_styled, change_detail_side_by_side, lang_for_path,
 };
 
 /// Default columns for the left (list) pane.
@@ -27,6 +27,13 @@ pub enum Focus {
     Diff,
 }
 
+/// Which rendering the diff pane uses. Side-by-side is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffView {
+    SideBySide,
+    Block,
+}
+
 /// Every state change is expressed as one of these and applied via `App::apply`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
@@ -34,6 +41,8 @@ pub enum AppAction {
     Nav(NavKey),
     ToggleFocus,
     ScrollDiff(i32),
+    /// Flip the diff pane between side-by-side and block rendering.
+    ToggleDiffView,
     NudgeSplit(i32),
     StartResize,
     Resize(u16),
@@ -58,6 +67,8 @@ pub struct App {
     pub last_area: Rect,
     pub last_visible_rows: usize,
     diff_cache: Option<(ChangeSource, Vec<Line<'static>>)>,
+    pub diff_view: DiffView,
+    side_cache: Option<(ChangeSource, Vec<SideRow>)>,
     /// Transient one-line message for the footer (e.g. an editor-launch error),
     /// dismissed on the next keypress.
     status: Option<String>,
@@ -86,6 +97,14 @@ fn build_diff_lines(ev: &ChangeEvent) -> Vec<Line<'static>> {
     change_detail_lines_styled(&detail, base, lang_for_path(&ev.file_path))
 }
 
+/// Build the full, un-clipped side-by-side rows for one change. Same re-read +
+/// base-line resolution as `build_diff_lines`.
+fn build_side_rows(ev: &ChangeEvent) -> Vec<SideRow> {
+    let detail = load_full_change(ev).unwrap_or_else(|| ev.detail.clone());
+    let base = resolve_line_in_file(&ev.file_path, &detail);
+    change_detail_side_by_side(&detail, base, lang_for_path(&ev.file_path))
+}
+
 impl App {
     /// Construct without touching the filesystem. `new` wraps this and refreshes.
     pub(crate) fn bare(worktree: PathBuf) -> Self {
@@ -102,6 +121,8 @@ impl App {
             last_area: Rect::default(),
             last_visible_rows: 0,
             diff_cache: None,
+            diff_view: DiffView::SideBySide,
+            side_cache: None,
             status: None,
             should_quit: false,
         }
@@ -164,6 +185,13 @@ impl App {
             }
             AppAction::Nav(key) => self.on_nav(key),
             AppAction::ScrollDiff(delta) => self.scroll_diff(delta),
+            AppAction::ToggleDiffView => {
+                self.diff_view = match self.diff_view {
+                    DiffView::SideBySide => DiffView::Block,
+                    DiffView::Block => DiffView::SideBySide,
+                };
+                self.diff_scroll = 0;
+            }
             AppAction::NudgeSplit(delta) => {
                 let target = (self.list_width as i32 + delta).max(0) as u16;
                 self.resize_to(target);
@@ -274,6 +302,33 @@ impl App {
         self.diff_cache
             .as_ref()
             .map(|(_, l)| l.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Styled side-by-side rows for the current selection, cached by the
+    /// selected change's `ChangeSource` (mirrors `diff_lines`).
+    pub fn diff_side_rows(&mut self) -> &[SideRow] {
+        let src = self.events.get(self.selected).map(|e| e.source.clone());
+        let needs = match (&self.side_cache, &src) {
+            (Some((cached, _)), Some(s)) => cached != s,
+            _ => true,
+        };
+        if needs {
+            match src {
+                Some(s) => {
+                    let rows = self
+                        .events
+                        .get(self.selected)
+                        .map(build_side_rows)
+                        .unwrap_or_default();
+                    self.side_cache = Some((s, rows));
+                }
+                None => self.side_cache = None,
+            }
+        }
+        self.side_cache
+            .as_ref()
+            .map(|(_, r)| r.as_slice())
             .unwrap_or(&[])
     }
 }
@@ -483,6 +538,39 @@ mod tests {
         assert_eq!(app.status(), Some("nope"));
         app.clear_status();
         assert_eq!(app.status(), None);
+    }
+
+    #[test]
+    fn default_diff_view_is_side_by_side() {
+        let app = App::bare(PathBuf::from("/wt"));
+        assert_eq!(app.diff_view, DiffView::SideBySide);
+    }
+
+    #[test]
+    fn toggle_diff_view_flips_and_resets_scroll() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.diff_scroll = 9;
+        app.apply(AppAction::ToggleDiffView);
+        assert_eq!(app.diff_view, DiffView::Block);
+        assert_eq!(app.diff_scroll, 0, "toggling resets the diff scroll");
+        app.apply(AppAction::ToggleDiffView);
+        assert_eq!(app.diff_view, DiffView::SideBySide);
+    }
+
+    #[test]
+    fn diff_side_rows_falls_back_to_detail_when_log_missing() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev(1, "/wt/a.rs", 1)]);
+        // ev() is an Edit { old: "a", new: "b" } -> one zipped replace row.
+        let rows = app.diff_side_rows().to_vec();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].left.is_some() && rows[0].right.is_some());
+    }
+
+    #[test]
+    fn diff_side_rows_empty_when_no_events() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        assert!(app.diff_side_rows().is_empty());
     }
 
     #[test]

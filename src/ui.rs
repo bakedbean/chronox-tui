@@ -8,9 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use chronox::nav::{adjust_scroll, clamp_scroll};
-use chronox::{clip_line_to_width, entry_lines, relative_display};
+use chronox::{clip_line_to_width, entry_lines, relative_display, side_cell_to_line};
 
-use crate::app::{App, Focus};
+use crate::app::{App, DiffView, Focus};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -65,8 +65,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let text: &str = match app.status() {
         Some(status) => status,
         None => match app.focus {
-            Focus::List => " ↑↓ move · e edit · Tab focus diff · [ ] resize · q quit ",
-            Focus::Diff => " ↑↓/PgUp/PgDn scroll · e edit · Tab focus list · [ ] resize · q quit ",
+            Focus::List => " ↑↓ move · e edit · d view · Tab focus diff · [ ] resize · q quit ",
+            Focus::Diff => " ↑↓/PgUp/PgDn scroll · e edit · d view · Tab focus list · [ ] resize · q quit ",
         },
     };
     f.render_widget(
@@ -146,19 +146,64 @@ fn render_diff(f: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    match app.diff_view {
+        DiffView::Block => render_diff_block(f, inner, app),
+        DiffView::SideBySide => render_diff_side_by_side(f, inner, app),
+    }
+}
+
+/// Today's view: removed (red) block then added (green) block, one column.
+fn render_diff_block(f: &mut Frame, inner: Rect, app: &mut App) {
     let body = inner.height as usize;
     let width = inner.width as usize;
-    let lines = app.diff_lines().to_vec();
-    let scroll = clamp_scroll(app.diff_scroll, lines.len(), body);
+    // Clamp against the row count first (a cheap cached call), then re-borrow
+    // the cached slice to clip only the visible window — avoids cloning the
+    // whole diff buffer every frame.
+    let scroll = clamp_scroll(app.diff_scroll, app.diff_lines().len(), body);
     app.diff_scroll = scroll;
 
-    let visible: Vec<Line> = lines
-        .into_iter()
+    let visible: Vec<Line> = app
+        .diff_lines()
+        .iter()
         .skip(scroll)
         .take(body)
-        .map(|l| clip_line_to_width(&l, width))
+        .map(|l| clip_line_to_width(l, width))
         .collect();
     f.render_widget(Paragraph::new(visible), inner);
+}
+
+/// Side-by-side: old on the left, new on the right, sharing one scroll offset
+/// (the columns have equal row counts). The pane is split evenly with a 1-col
+/// divider; each column clips independently.
+fn render_diff_side_by_side(f: &mut Frame, inner: Rect, app: &mut App) {
+    let body = inner.height as usize;
+    // Clamp against the row count first (a cheap cached call), then re-borrow
+    // the cached slice below — avoids cloning the whole row vector every frame.
+    let scroll = clamp_scroll(app.diff_scroll, app.diff_side_rows().len(), body);
+    app.diff_scroll = scroll;
+
+    let cols = Layout::horizontal([
+        Constraint::Length(inner.width.saturating_sub(1) / 2),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(inner);
+    let (left_area, sep_area, right_area) = (cols[0], cols[1], cols[2]);
+    let left_w = left_area.width as usize;
+    let right_w = right_area.width as usize;
+
+    let mut left_lines: Vec<Line> = Vec::new();
+    let mut right_lines: Vec<Line> = Vec::new();
+    for row in app.diff_side_rows().iter().skip(scroll).take(body) {
+        left_lines.push(clip_line_to_width(&side_cell_to_line(row.left.as_ref()), left_w));
+        right_lines.push(clip_line_to_width(&side_cell_to_line(row.right.as_ref()), right_w));
+    }
+    let sep: Vec<Line> = (0..sep_area.height)
+        .map(|_| Line::from(Span::styled("│", Style::default().fg(Color::DarkGray))))
+        .collect();
+    f.render_widget(Paragraph::new(left_lines), left_area);
+    f.render_widget(Paragraph::new(sep), sep_area);
+    f.render_widget(Paragraph::new(right_lines), right_area);
 }
 
 #[cfg(test)]
@@ -242,5 +287,42 @@ mod tests {
         let buf = draw_app(&mut app, 80, 12);
         // List block top-left corner is at (0, 1) — under the title row.
         assert_eq!(buf[(0u16, 1u16)].fg, Color::Cyan);
+    }
+
+    #[test]
+    fn footer_advertises_the_diff_toggle_key() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        let buf = draw_app(&mut app, 80, 10);
+        assert!(buffer_text(&buf).contains("d view"));
+    }
+
+    #[test]
+    fn side_by_side_shows_old_left_and_new_right() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        // ev()'s detail is Edit { old: "old", new: "new" } -> one replace row.
+        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
+        app.focus = Focus::Diff; // default view is SideBySide
+        let buf = draw_app(&mut app, 80, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("- old"), "removed line shown on the left");
+        assert!(text.contains("+ new"), "added line shown on the right");
+        // Positional check: the removed marker must sit on the same row as, and
+        // to the LEFT of, the added marker — otherwise a regression to the
+        // single-column block view would still satisfy the contains() asserts.
+        let w = 80usize;
+        let minus = buf.content.iter().position(|c| c.symbol() == "-").unwrap();
+        let plus = buf.content.iter().position(|c| c.symbol() == "+").unwrap();
+        assert_eq!(minus / w, plus / w, "old and new render on the same row");
+        assert!(minus % w < plus % w, "old column is left of new column");
+    }
+
+    #[test]
+    fn block_view_still_renders_after_toggle() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
+        app.apply(crate::app::AppAction::ToggleDiffView); // -> Block
+        let buf = draw_app(&mut app, 80, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("- old") && text.contains("+ new"));
     }
 }

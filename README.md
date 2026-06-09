@@ -51,11 +51,24 @@ it (and make a few edits) first, or you'll see the empty state.
 | `g`/`G`, `Home`/`End` | List: jump to top / bottom |
 | `Tab` | Toggle focus between the list and the diff |
 | `Enter` | Focus the diff pane |
+| `d` | Toggle the diff between side-by-side (default) and block (before/after) |
 | `e` | Open the selected file in `$VISUAL`/`$EDITOR` at the changed line |
 | `[` / `]` | Nudge the split divider left / right |
 | mouse drag on the divider | Resize the split |
 | mouse wheel over the diff | Scroll the diff |
 | `q`, `Esc`, `Ctrl-C` | Quit |
+
+## Note on the diff views
+
+`d` toggles how the selected change is shown. **Side-by-side** (the default)
+aligns the old and new text line-by-line in two columns, coloring only the lines
+that actually changed — old on the left (red), new on the right (green), with
+unchanged context lines on both sides. **Block** shows the original
+before/after form: the whole old block in red, then the whole new block in
+green. In side-by-side the two columns scroll together as one. The two views
+have different line counts, so switching with `d` starts the new view from the
+top (the scroll position resets); the divider/`[`/`]` resize applies to the
+pane as a whole.
 
 ## Note on the editor key
 
