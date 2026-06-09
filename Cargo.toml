@@ -6,7 +6,7 @@ description = "A ratatui TUI for the chronox change timeline."
 
 [dependencies]
 ratatui = "0.29"
-chronox = { git = "https://github.com/bakedbean/chronox", rev = "deacc9ad8698acd95dbb1fb0aea35b1becf5e8bd" }
+chronox = { git = "https://github.com/bakedbean/chronox", rev = "1b3b9f992e7bd53e4ff4118507e02579af0fe392" }
 
 [dev-dependencies]
 tempfile = "3"
