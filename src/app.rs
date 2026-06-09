@@ -42,7 +42,6 @@ pub enum AppAction {
     ToggleFocus,
     ScrollDiff(i32),
     /// Flip the diff pane between side-by-side and block rendering.
-    #[allow(dead_code)]
     ToggleDiffView,
     NudgeSplit(i32),
     StartResize,
@@ -69,7 +68,6 @@ pub struct App {
     pub last_visible_rows: usize,
     diff_cache: Option<(ChangeSource, Vec<Line<'static>>)>,
     pub diff_view: DiffView,
-    #[allow(dead_code)]
     side_cache: Option<(ChangeSource, Vec<SideRow>)>,
     /// Transient one-line message for the footer (e.g. an editor-launch error),
     /// dismissed on the next keypress.
@@ -101,7 +99,6 @@ fn build_diff_lines(ev: &ChangeEvent) -> Vec<Line<'static>> {
 
 /// Build the full, un-clipped side-by-side rows for one change. Same re-read +
 /// base-line resolution as `build_diff_lines`.
-#[allow(dead_code)]
 fn build_side_rows(ev: &ChangeEvent) -> Vec<SideRow> {
     let detail = load_full_change(ev).unwrap_or_else(|| ev.detail.clone());
     let base = resolve_line_in_file(&ev.file_path, &detail);
@@ -310,7 +307,6 @@ impl App {
 
     /// Styled side-by-side rows for the current selection, cached by the
     /// selected change's `ChangeSource` (mirrors `diff_lines`).
-    #[allow(dead_code)]
     pub fn diff_side_rows(&mut self) -> &[SideRow] {
         let src = self.events.get(self.selected).map(|e| e.source.clone());
         let needs = match (&self.side_cache, &src) {
