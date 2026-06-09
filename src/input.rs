@@ -34,6 +34,7 @@ fn map_key(k: KeyEvent) -> AppAction {
         KeyCode::Char('g') | KeyCode::Home => AppAction::Nav(NavKey::Top),
         KeyCode::Char('G') | KeyCode::End => AppAction::Nav(NavKey::Bottom),
         KeyCode::Char('e') => AppAction::OpenInEditor,
+        KeyCode::Char('d') => AppAction::ToggleDiffView,
         KeyCode::Enter => AppAction::Nav(NavKey::Enter),
         KeyCode::Tab => AppAction::ToggleFocus,
         KeyCode::PageUp => AppAction::ScrollDiff(-10),
@@ -153,6 +154,15 @@ mod tests {
         assert_eq!(map(drag.clone(), &app), AppAction::None, "not dragging yet");
         app.resizing = true;
         assert_eq!(map(drag, &app), AppAction::Resize(45));
+    }
+
+    #[test]
+    fn d_toggles_diff_view() {
+        let app = App::bare(PathBuf::from("/wt"));
+        assert_eq!(
+            map(key(KeyCode::Char('d')), &app),
+            AppAction::ToggleDiffView
+        );
     }
 
     #[test]
