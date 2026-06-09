@@ -1,16 +1,17 @@
 //! App state and transitions for chronox-tui. All state changes go through
 //! `App::apply`. Timeline parsing, navigation, and styled rendering are
-//! delegated to the `chronox` crate; this module is the shell around them.
+//! delegated to the `sessionx` crate; this module is the shell around them.
 
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::path::PathBuf;
 
-use chronox::extract::{claude_session_files, load_full_change, resolve_line_in_file};
-use chronox::nav::nav;
-use chronox::{
-    ChangeEvent, ChangeSource, NavAction, NavKey, SideRow, Timeline,
-    change_detail_lines_styled, change_detail_side_by_side, lang_for_path,
+use crate::render::change_detail_lines_styled;
+use sessionx::extract::{claude_session_files, load_full_change, resolve_line_in_file};
+use sessionx::nav::nav;
+use sessionx::{
+    ChangeEvent, ChangeSource, NavAction, NavKey, SideRow, Timeline, change_detail_side_by_side,
+    lang_for_path,
 };
 
 /// Default columns for the left (list) pane.
@@ -266,7 +267,7 @@ impl App {
 
     /// Re-scan the worktree's session logs, rebuild the merged event list, and
     /// re-pin the cursor to the same change. Cheap to call on a tick — the
-    /// chronox `Timeline` reparses only files whose size/mtime changed.
+    /// sessionx `Timeline` reparses only files whose size/mtime changed.
     fn refresh(&mut self) {
         let pinned = self.events.get(self.selected).map(|e| e.source.clone());
         let files = claude_session_files(&self.worktree);
@@ -336,7 +337,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chronox::{ChangeDetail, ChangeTool};
+    use sessionx::{ChangeDetail, ChangeTool};
 
     fn ev(ts: i64, file: &str, line_index: usize) -> ChangeEvent {
         ChangeEvent {

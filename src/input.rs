@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
-use chronox::NavKey;
+use sessionx::NavKey;
 
 use crate::app::{App, AppAction};
 

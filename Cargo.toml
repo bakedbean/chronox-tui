@@ -2,11 +2,11 @@
 name = "chronox-tui"
 version = "0.1.0"
 edition = "2024"
-description = "A ratatui TUI for the chronox change timeline."
+description = "A standalone ratatui TUI over the sessionx change timeline."
 
 [dependencies]
 ratatui = "0.29"
-chronox = { git = "https://github.com/bakedbean/chronox", rev = "1b3b9f992e7bd53e4ff4118507e02579af0fe392" }
+sessionx = { git = "https://github.com/bakedbean/sessionx", rev = "3f83a3abbfe9e5a00521f9d91c7c08c815a9d151" }
 
 [dev-dependencies]
 tempfile = "3"

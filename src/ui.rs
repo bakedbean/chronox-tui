@@ -7,8 +7,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use chronox::nav::{adjust_scroll, clamp_scroll};
-use chronox::{clip_line_to_width, entry_lines, relative_display, side_cell_to_line};
+use crate::render::{clip_line_to_width, entry_lines, relative_display, side_cell_to_line};
+use sessionx::nav::{adjust_scroll, clamp_scroll};
 
 use crate::app::{App, DiffView, Focus};
 
@@ -66,7 +66,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Some(status) => status,
         None => match app.focus {
             Focus::List => " ↑↓ move · e edit · d view · Tab focus diff · [ ] resize · q quit ",
-            Focus::Diff => " ↑↓/PgUp/PgDn scroll · e edit · d view · Tab focus list · [ ] resize · q quit ",
+            Focus::Diff => {
+                " ↑↓/PgUp/PgDn scroll · e edit · d view · Tab focus list · [ ] resize · q quit "
+            }
         },
     };
     f.render_widget(
@@ -195,8 +197,14 @@ fn render_diff_side_by_side(f: &mut Frame, inner: Rect, app: &mut App) {
     let mut left_lines: Vec<Line> = Vec::new();
     let mut right_lines: Vec<Line> = Vec::new();
     for row in app.diff_side_rows().iter().skip(scroll).take(body) {
-        left_lines.push(clip_line_to_width(&side_cell_to_line(row.left.as_ref()), left_w));
-        right_lines.push(clip_line_to_width(&side_cell_to_line(row.right.as_ref()), right_w));
+        left_lines.push(clip_line_to_width(
+            &side_cell_to_line(row.left.as_ref()),
+            left_w,
+        ));
+        right_lines.push(clip_line_to_width(
+            &side_cell_to_line(row.right.as_ref()),
+            right_w,
+        ));
     }
     let sep: Vec<Line> = (0..sep_area.height)
         .map(|_| Line::from(Span::styled("│", Style::default().fg(Color::DarkGray))))
@@ -210,10 +218,10 @@ fn render_diff_side_by_side(f: &mut Frame, inner: Rect, app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::App;
-    use chronox::{ChangeDetail, ChangeEvent, ChangeSource, ChangeTool};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use sessionx::{ChangeDetail, ChangeEvent, ChangeSource, ChangeTool};
     use std::path::PathBuf;
 
     fn ev(file: &str) -> ChangeEvent {
