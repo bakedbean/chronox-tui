@@ -302,6 +302,14 @@ mod tests {
         let text = buffer_text(&buf);
         assert!(text.contains("- old"), "removed line shown on the left");
         assert!(text.contains("+ new"), "added line shown on the right");
+        // Positional check: the removed marker must sit on the same row as, and
+        // to the LEFT of, the added marker — otherwise a regression to the
+        // single-column block view would still satisfy the contains() asserts.
+        let w = 80usize;
+        let minus = buf.content.iter().position(|c| c.symbol() == "-").unwrap();
+        let plus = buf.content.iter().position(|c| c.symbol() == "+").unwrap();
+        assert_eq!(minus / w, plus / w, "old and new render on the same row");
+        assert!(minus % w < plus % w, "old column is left of new column");
     }
 
     #[test]
