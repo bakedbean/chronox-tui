@@ -42,23 +42,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "chronox"
-version = "0.1.0"
-source = "git+https://github.com/bakedbean/chronox?rev=1b3b9f992e7bd53e4ff4118507e02579af0fe392#1b3b9f992e7bd53e4ff4118507e02579af0fe392"
-dependencies = [
- "dirs",
- "log",
- "ratatui",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "chronox-tui"
 version = "0.1.0"
 dependencies = [
- "chronox",
  "ratatui",
+ "sessionx",
  "tempfile",
 ]
 
@@ -580,6 +568,18 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "sessionx"
+version = "0.1.0"
+source = "git+https://github.com/bakedbean/sessionx?rev=3f83a3abbfe9e5a00521f9d91c7c08c815a9d151#3f83a3abbfe9e5a00521f9d91c7c08c815a9d151"
+dependencies = [
+ "dirs",
+ "log",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
