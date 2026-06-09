@@ -65,8 +65,10 @@ aligns the old and new text line-by-line in two columns, coloring only the lines
 that actually changed — old on the left (red), new on the right (green), with
 unchanged context lines on both sides. **Block** shows the original
 before/after form: the whole old block in red, then the whole new block in
-green. Both share one scroll position, and the divider/`[`/`]` resize applies to
-the pane as a whole.
+green. In side-by-side the two columns scroll together as one. The two views
+have different line counts, so switching with `d` starts the new view from the
+top (the scroll position resets); the divider/`[`/`]` resize applies to the
+pane as a whole.
 
 ## Note on the editor key
 

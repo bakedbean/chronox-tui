@@ -156,15 +156,18 @@ fn render_diff(f: &mut Frame, area: Rect, app: &mut App) {
 fn render_diff_block(f: &mut Frame, inner: Rect, app: &mut App) {
     let body = inner.height as usize;
     let width = inner.width as usize;
-    let lines = app.diff_lines().to_vec();
-    let scroll = clamp_scroll(app.diff_scroll, lines.len(), body);
+    // Clamp against the row count first (a cheap cached call), then re-borrow
+    // the cached slice to clip only the visible window — avoids cloning the
+    // whole diff buffer every frame.
+    let scroll = clamp_scroll(app.diff_scroll, app.diff_lines().len(), body);
     app.diff_scroll = scroll;
 
-    let visible: Vec<Line> = lines
-        .into_iter()
+    let visible: Vec<Line> = app
+        .diff_lines()
+        .iter()
         .skip(scroll)
         .take(body)
-        .map(|l| clip_line_to_width(&l, width))
+        .map(|l| clip_line_to_width(l, width))
         .collect();
     f.render_widget(Paragraph::new(visible), inner);
 }
@@ -174,8 +177,9 @@ fn render_diff_block(f: &mut Frame, inner: Rect, app: &mut App) {
 /// divider; each column clips independently.
 fn render_diff_side_by_side(f: &mut Frame, inner: Rect, app: &mut App) {
     let body = inner.height as usize;
-    let rows = app.diff_side_rows().to_vec();
-    let scroll = clamp_scroll(app.diff_scroll, rows.len(), body);
+    // Clamp against the row count first (a cheap cached call), then re-borrow
+    // the cached slice below — avoids cloning the whole row vector every frame.
+    let scroll = clamp_scroll(app.diff_scroll, app.diff_side_rows().len(), body);
     app.diff_scroll = scroll;
 
     let cols = Layout::horizontal([
@@ -190,7 +194,7 @@ fn render_diff_side_by_side(f: &mut Frame, inner: Rect, app: &mut App) {
 
     let mut left_lines: Vec<Line> = Vec::new();
     let mut right_lines: Vec<Line> = Vec::new();
-    for row in rows.iter().skip(scroll).take(body) {
+    for row in app.diff_side_rows().iter().skip(scroll).take(body) {
         left_lines.push(clip_line_to_width(&side_cell_to_line(row.left.as_ref()), left_w));
         right_lines.push(clip_line_to_width(&side_cell_to_line(row.right.as_ref()), right_w));
     }
