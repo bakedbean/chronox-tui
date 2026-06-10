@@ -21,6 +21,33 @@ fn style_for(kind: TokenKind) -> Style {
     }
 }
 
+/// Fixed-width magnitude bar: `add` green cells + `del` red cells in a
+/// `width`-cell gauge, the remainder faint `▱`. Mirrors the design's `statBar`.
+pub fn stat_bar(add: u32, del: u32, width: usize) -> Vec<Span<'static>> {
+    let total = (add + del).max(1) as f64;
+    let mut g = ((add as f64 / total) * width as f64).round() as usize;
+    let mut r = ((del as f64 / total) * width as f64).round() as usize;
+    if add > 0 && g == 0 {
+        g = 1;
+    }
+    if del > 0 && r == 0 {
+        r = 1;
+    }
+    while g + r > width {
+        if r > g {
+            r -= 1;
+        } else {
+            g -= 1;
+        }
+    }
+    let empty = width - g - r;
+    vec![
+        Span::styled("▰".repeat(g), Style::default().fg(Color::Green)),
+        Span::styled("▰".repeat(r), Style::default().fg(Color::Red)),
+        Span::styled("▱".repeat(empty), Style::default().fg(Color::DarkGray)),
+    ]
+}
+
 fn token_spans(code: &[Token]) -> Vec<Span<'static>> {
     code.iter()
         .map(|(t, k)| Span::styled(t.clone(), style_for(*k)))
@@ -331,6 +358,30 @@ mod tests {
         let out = abbreviate_path("widgets/chronology_bar.rs", 12);
         assert!(out.chars().count() <= 12);
         assert!(out.ends_with(".rs"));
+    }
+
+    #[test]
+    fn stat_bar_splits_green_red_and_pads_empty() {
+        // all adds -> 4 green, 0 red, 0 empty
+        let b = stat_bar(10, 0, 4);
+        assert_eq!(b[0].content.as_ref(), "▰▰▰▰");
+        assert_eq!(b[0].style.fg, Some(Color::Green));
+        assert_eq!(b[1].content.as_ref(), "");
+        assert_eq!(b[2].content.as_ref(), "");
+
+        // mixed -> at least one of each, total width 4
+        let b = stat_bar(3, 1, 4);
+        let g = b[0].content.chars().count();
+        let r = b[1].content.chars().count();
+        let e = b[2].content.chars().count();
+        assert_eq!(g + r + e, 4);
+        assert!(g >= 1 && r >= 1, "both sides represented when both nonzero");
+        assert_eq!(b[1].style.fg, Some(Color::Red));
+        assert_eq!(b[2].style.fg, Some(Color::DarkGray));
+
+        // nothing -> all empty/faint
+        let b = stat_bar(0, 0, 4);
+        assert_eq!(b[2].content.chars().count(), 4);
     }
 
     #[test]
