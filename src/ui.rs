@@ -367,8 +367,24 @@ mod tests {
         // to the LEFT of, the added marker — otherwise a regression to the
         // single-column block view would still satisfy the contains() asserts.
         let w = 80usize;
-        let minus = buf.content.iter().position(|c| c.symbol() == "-").unwrap();
-        let plus = buf.content.iter().position(|c| c.symbol() == "+").unwrap();
+        // The list pane renders gauge counts containing '-'/'+', so restrict the
+        // positional check to the diff pane (columns right of list + separator).
+        let diff_start = app.list_width as usize + 1;
+        let in_diff = |idx: usize| idx % w >= diff_start;
+        let minus = buf
+            .content
+            .iter()
+            .enumerate()
+            .find(|(i, c)| c.symbol() == "-" && in_diff(*i))
+            .map(|(i, _)| i)
+            .expect("a '-' in the diff pane");
+        let plus = buf
+            .content
+            .iter()
+            .enumerate()
+            .find(|(i, c)| c.symbol() == "+" && in_diff(*i))
+            .map(|(i, _)| i)
+            .expect("a '+' in the diff pane");
         assert_eq!(minus / w, plus / w, "old and new render on the same row");
         assert!(minus % w < plus % w, "old column is left of new column");
     }
