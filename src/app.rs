@@ -99,6 +99,21 @@ fn build_groups(events: &[ChangeEvent], counts: &[(u32, u32)]) -> Vec<FileGroup>
     groups
 }
 
+/// Flatten groups into the visible-row sequence: every header in order, with
+/// the active group's edit rows inserted directly under its header.
+fn build_visible(groups: &[FileGroup], active: usize) -> Vec<VisibleRow> {
+    let mut out = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        out.push(VisibleRow::Header { group: gi });
+        if gi == active {
+            for &event in &g.event_idxs {
+                out.push(VisibleRow::Edit { event });
+            }
+        }
+    }
+    out
+}
+
 pub struct App {
     pub worktree: PathBuf,
     timeline: Timeline,
@@ -657,6 +672,40 @@ mod tests {
 
         assert_eq!(groups[2].file, PathBuf::from("/wt/c.rs"));
         assert!(groups[2].is_new, "single Write -> new file");
+    }
+
+    #[test]
+    fn build_visible_expands_only_active_group() {
+        let events = vec![
+            ev(3, "/wt/a.rs", 1),
+            ev(2, "/wt/a.rs", 2),
+            ev(1, "/wt/b.rs", 3),
+        ];
+        let counts = vec![(1, 0), (1, 0), (1, 0)];
+        let groups = build_groups(&events, &counts);
+
+        // active = group 1 (b.rs): headers for both files, b's single edit nested.
+        let vis = build_visible(&groups, 1);
+        assert_eq!(
+            vis,
+            vec![
+                VisibleRow::Header { group: 0 },
+                VisibleRow::Header { group: 1 },
+                VisibleRow::Edit { event: 2 },
+            ]
+        );
+
+        // active = group 0 (a.rs): a's two edits nested, b folded.
+        let vis = build_visible(&groups, 0);
+        assert_eq!(
+            vis,
+            vec![
+                VisibleRow::Header { group: 0 },
+                VisibleRow::Edit { event: 0 },
+                VisibleRow::Edit { event: 1 },
+                VisibleRow::Header { group: 1 },
+            ]
+        );
     }
 
     #[test]
