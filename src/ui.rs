@@ -46,6 +46,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    // Keep `list_width` consistent with the divider `render_frame` actually
+    // draws (clamped inside the frame). `reclamp_split` only floors at
+    // `MIN_LIST`, so on a terminal narrower than `MIN_LIST + 2` the drawn
+    // divider would otherwise diverge from `list_width` — which `input.rs` uses
+    // for mouse divider hit-testing and diff-wheel routing.
+    app.list_width = app.list_width.min(body.width.saturating_sub(2));
+
     let (left, right) = render_frame(f, body, app);
     render_list_inner(f, left, app);
     render_diff_inner(f, right, app);
@@ -553,5 +560,22 @@ mod tests {
                 let _ = draw_app(&mut app, w, h);
             }
         }
+    }
+
+    #[test]
+    fn list_width_clamped_to_frame_on_narrow_terminal() {
+        // On a terminal narrower than MIN_LIST + 2, reclamp_split floors
+        // list_width at MIN_LIST while the drawn divider is clamped inside the
+        // frame. draw must reconcile them so list_width matches the rendered
+        // divider (which input.rs uses for mouse hit-testing).
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/app.rs", 0, 1)]);
+        app.list_width = 30; // wider than the frame can hold
+        let w = 12u16; // body.width == 12 for a full-width terminal at x=0
+        let _ = draw_app(&mut app, w, 8);
+        assert!(
+            app.list_width <= w.saturating_sub(2),
+            "divider stays inside the frame so it matches the mouse hit-test"
+        );
     }
 }
