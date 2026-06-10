@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::render::{
-    clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line,
+    INACTIVE_FG, clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line,
 };
 use sessionx::nav::{adjust_scroll, clamp_scroll};
 
@@ -161,7 +161,12 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
         f.render_widget(Paragraph::new(left_edge), Rect::new(right_col, y, 1, 1));
     }
 
-    let left = Rect::new(x0 + 1, y0 + 1, dx.saturating_sub(x0 + 1), h.saturating_sub(2));
+    let left = Rect::new(
+        x0 + 1,
+        y0 + 1,
+        dx.saturating_sub(x0 + 1),
+        h.saturating_sub(2),
+    );
     let right = Rect::new(
         dx + 1,
         y0 + 1,
@@ -175,9 +180,7 @@ const SPINNER: [&str; 9] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 fn render_status_strip(f: &mut Frame, area: Rect, app: &App) {
     let green = Style::default().fg(Color::Green);
-    let dim = Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM);
+    let dim = Style::default().fg(INACTIVE_FG);
     let (add, del) = app.session_totals();
     let n = app.events().len();
     let m = app.groups().len();

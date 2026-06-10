@@ -10,6 +10,12 @@ use sessionx::syntax::{
 };
 use std::path::Path;
 
+/// De-emphasised foreground grey for "inactive" header and nav text (folded
+/// carets, timestamps, counts, unselected summaries). Bright enough to stay
+/// legible on a dark terminal — `DarkGray` combined with `Modifier::DIM` was
+/// too dark to read.
+pub const INACTIVE_FG: Color = Color::Rgb(0x8a, 0x91, 0x9e);
+
 fn style_for(kind: TokenKind) -> Style {
     match kind {
         TokenKind::Keyword => Style::default().fg(Color::Magenta),
@@ -92,9 +98,7 @@ pub fn header_line(
     width: u16,
     selected: bool,
 ) -> Line<'static> {
-    let dim = Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM);
+    let dim = Style::default().fg(INACTIVE_FG);
     let (caret, caret_style) = if expanded {
         ("▾ ", Style::default().fg(Color::Cyan))
     } else {
@@ -155,10 +159,8 @@ pub fn edit_line(
     selected: bool,
     width: u16,
 ) -> Line<'static> {
-    let faint = Style::default().fg(Color::DarkGray);
-    let dim = Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::DIM);
+    let faint = Style::default().fg(INACTIVE_FG);
+    let dim = Style::default().fg(INACTIVE_FG);
     let connector = if last { "└ " } else { "├ " };
     let summary_style = if selected {
         Style::default().fg(Color::White)
