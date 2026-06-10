@@ -21,6 +21,21 @@ fn style_for(kind: TokenKind) -> Style {
     }
 }
 
+/// Count added vs removed lines for a change by running its bounded `detail`
+/// through `change_detail_diff` and tallying markers. `base_line`/`lang` do not
+/// affect counts, so we pass neutral values. Source A in the design (no I/O).
+pub fn change_counts(detail: &sessionx::event::ChangeDetail) -> (u32, u32) {
+    let mut add = 0;
+    let mut del = 0;
+    for dl in change_detail_diff(detail, 1, None) {
+        match dl.marker {
+            DiffMarker::Added => add += 1,
+            DiffMarker::Removed => del += 1,
+        }
+    }
+    (add, del)
+}
+
 /// Fixed-width magnitude bar: `add` green cells + `del` red cells in a
 /// `width`-cell gauge, the remainder faint `▱`. Mirrors the design's `statBar`.
 pub fn stat_bar(add: u32, del: u32, width: usize) -> Vec<Span<'static>> {
@@ -382,6 +397,26 @@ mod tests {
         // nothing -> all empty/faint
         let b = stat_bar(0, 0, 4);
         assert_eq!(b[2].content.chars().count(), 4);
+    }
+
+    #[test]
+    fn change_counts_counts_added_and_removed() {
+        use sessionx::event::ChangeDetail;
+        assert_eq!(
+            change_counts(&ChangeDetail::Edit {
+                old: "a\nb".into(),
+                new: "x".into()
+            }),
+            (1, 2),
+            "1 added line, 2 removed lines"
+        );
+        assert_eq!(
+            change_counts(&ChangeDetail::Write {
+                head: "a\nb\nc".into()
+            }),
+            (3, 0)
+        );
+        assert_eq!(change_counts(&ChangeDetail::None), (0, 0));
     }
 
     #[test]
