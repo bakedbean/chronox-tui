@@ -7,10 +7,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::render::{clip_line_to_width, entry_lines, relative_display, side_cell_to_line};
+use crate::render::{clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line};
 use sessionx::nav::{adjust_scroll, clamp_scroll};
 
-use crate::app::{App, DiffView, Focus};
+use crate::app::{App, DiffView, Focus, VisibleRow};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -95,12 +95,12 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
 }
 
 fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = pane_block("timeline", app.focus == Focus::List);
+    let block = pane_block("chronox · by file", app.focus == Focus::List);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let rows = inner.height as usize;
-    let len = app.events().len();
+    let len = app.visible().len();
     let scroll = clamp_scroll(
         adjust_scroll(app.list_scroll, app.selected, rows, len),
         len,
@@ -110,12 +110,43 @@ fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
     app.last_visible_rows = rows;
 
     let sel = app.selected;
+    let active = app.active_group;
     let width = inner.width;
     let mut lines: Vec<Line> = Vec::new();
-    for (i, ev) in app.events().iter().enumerate().skip(scroll).take(rows) {
-        for line in entry_lines(ev, &app.worktree, width, i == sel) {
-            lines.push(clip_line_to_width(&line, width as usize));
-        }
+    for (i, row) in app.visible().iter().enumerate().skip(scroll).take(rows) {
+        let line = match *row {
+            VisibleRow::Header { group } => {
+                let g = &app.groups()[group];
+                let rel = relative_display(&g.file, &app.worktree);
+                header_line(
+                    &rel,
+                    g.add,
+                    g.del,
+                    g.event_idxs.len(),
+                    g.is_new,
+                    group == active,
+                    group == active,
+                    width,
+                    i == sel,
+                )
+            }
+            VisibleRow::Edit { event } => {
+                let g = &app.groups()[active];
+                let last = g.event_idxs.last() == Some(&event);
+                let (add, del) = app.event_counts(event);
+                let ev = &app.events()[event];
+                edit_line(
+                    ev.timestamp_ms,
+                    add,
+                    del,
+                    &ev.summary,
+                    last,
+                    i == sel,
+                    width,
+                )
+            }
+        };
+        lines.push(clip_line_to_width(&line, width as usize));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -242,6 +273,24 @@ mod tests {
         }
     }
 
+    fn ev_named(file: &str, ts: i64, line_index: usize) -> ChangeEvent {
+        ChangeEvent {
+            timestamp_ms: ts,
+            tool: ChangeTool::Edit,
+            file_path: PathBuf::from(file),
+            summary: "tweak the thing".into(),
+            detail: ChangeDetail::Edit {
+                old: "old".into(),
+                new: "new".into(),
+            },
+            source: ChangeSource {
+                session_file: PathBuf::from("s.jsonl"),
+                line_index,
+                index_in_line: 0,
+            },
+        }
+    }
+
     fn buffer_text(buf: &Buffer) -> String {
         buf.content.iter().map(|c| c.symbol()).collect()
     }
@@ -322,6 +371,22 @@ mod tests {
         let plus = buf.content.iter().position(|c| c.symbol() == "+").unwrap();
         assert_eq!(minus / w, plus / w, "old and new render on the same row");
         assert!(minus % w < plus % w, "old column is left of new column");
+    }
+
+    #[test]
+    fn list_shows_file_header_and_nested_edit() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![
+            ev_named("/wt/src/app.rs", 0, 1),
+            ev_named("/wt/src/ui.rs", 0, 2),
+        ]);
+        app.list_width = 50; // wide enough for the nested edit summary to render unclipped
+        let buf = draw_app(&mut app, 100, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("src/app.rs"), "file header rendered");
+        assert!(text.contains("▾"), "active file expanded");
+        assert!(text.contains("▸"), "other file folded");
+        assert!(text.contains("tweak the thing"), "active file's edit summary shown");
     }
 
     #[test]

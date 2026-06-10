@@ -5,7 +5,6 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use sessionx::event::ChangeEvent;
 use sessionx::syntax::{
     CellKind, DiffCell, DiffLine, DiffMarker, LangSpec, Token, TokenKind, change_detail_diff,
 };
@@ -249,7 +248,7 @@ pub fn clip_line_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
     Line::from(out)
 }
 
-// ── entry_lines and display helpers from chronology_bar.rs ───────────────────
+// ── display helpers from chronology_bar.rs ───────────────────────────────────
 
 /// Worktree-relative display path, falling back to the full path when the file
 /// is not under the worktree.
@@ -318,53 +317,12 @@ pub fn hhmm(timestamp_ms: i64) -> String {
     format!("{h:02}:{m:02}")
 }
 
-/// One bar row: `HH:MM <abbreviated path>`, reversed when `selected`.
-pub fn entry_lines(
-    ev: &ChangeEvent,
-    worktree: &Path,
-    width: u16,
-    selected: bool,
-) -> Vec<Line<'static>> {
-    let rel = relative_display(&ev.file_path, worktree);
-    let path_budget = (width as usize).saturating_sub(6);
-    let path = abbreviate_path(&rel, path_budget);
-    let style = if selected {
-        Style::default().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default()
-    };
-    let time_style = if selected {
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM)
-    } else {
-        Style::default().add_modifier(Modifier::DIM)
-    };
-    vec![Line::from(vec![
-        Span::styled(hhmm(ev.timestamp_ms), time_style),
-        Span::styled(" ", style),
-        Span::styled(path, style),
-    ])]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
-    use sessionx::event::{ChangeDetail, ChangeSource, ChangeTool};
-    use std::path::{Path, PathBuf};
-
-    fn ev(file: &str, summary: &str) -> ChangeEvent {
-        ChangeEvent {
-            timestamp_ms: 0,
-            tool: ChangeTool::Edit,
-            file_path: PathBuf::from(file),
-            summary: summary.to_string(),
-            detail: ChangeDetail::Edit {
-                old: "a".into(),
-                new: "b".into(),
-            },
-            source: ChangeSource::default(),
-        }
-    }
+    use sessionx::event::ChangeDetail;
+    use std::path::Path;
 
     #[test]
     fn styled_lines_preserve_colours_and_gutter() {
@@ -429,34 +387,6 @@ mod tests {
     fn relative_path_passthrough_when_not_prefixed() {
         let p = relative_display(Path::new("/other/x.rs"), Path::new("/wt"));
         assert_eq!(p, "/other/x.rs");
-    }
-
-    #[test]
-    fn entry_is_a_single_header_line() {
-        let lines = entry_lines(
-            &ev("/wt/src/main.rs", "fn foo()"),
-            Path::new("/wt"),
-            40,
-            false,
-        );
-        assert_eq!(lines.len(), 1, "one row: the time+path header");
-    }
-
-    #[test]
-    fn selected_entry_reverses_its_spans() {
-        let lines = entry_lines(
-            &ev("/wt/src/main.rs", "fn foo()"),
-            Path::new("/wt"),
-            40,
-            true,
-        );
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
-            "selected row should be fully reversed"
-        );
     }
 
     #[test]
