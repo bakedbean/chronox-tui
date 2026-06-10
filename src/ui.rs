@@ -385,7 +385,7 @@ mod tests {
         // The list pane renders gauge counts containing '-'/'+', so restrict the
         // positional check to the diff pane (columns right of list + separator).
         let diff_start = app.list_width as usize + 1;
-        let in_diff = |idx: usize| idx % w >= diff_start;
+        let in_diff = |idx: usize| idx % w >= diff_start && idx / w > 0;
         let minus = buf
             .content
             .iter()
