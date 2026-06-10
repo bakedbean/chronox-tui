@@ -25,7 +25,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .split(area);
     let (title_area, body, footer) = (chunks[0], chunks[1], chunks[2]);
 
-    render_title(f, title_area, app);
+    render_status_strip(f, title_area, app);
     render_footer(f, footer, app);
 
     if app.events().is_empty() {
@@ -48,15 +48,30 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     render_diff(f, cols[2], app);
 }
 
-fn render_title(f: &mut Frame, area: Rect, app: &App) {
-    let title = format!("chronox — {}", app.worktree.display());
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD),
-        ))),
-        area,
-    );
+const SPINNER: [&str; 9] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"];
+
+fn render_status_strip(f: &mut Frame, area: Rect, app: &App) {
+    let green = Style::default().fg(Color::Green);
+    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let (add, del) = app.session_totals();
+    let n = app.events().len();
+    let m = app.groups().len();
+    let spin = SPINNER[app.spinner_frame % SPINNER.len()];
+
+    let line = Line::from(vec![
+        Span::styled("● ", green),
+        Span::styled("chronox  ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(app.worktree.display().to_string(), dim),
+        Span::raw("   "),
+        Span::styled(format!("{spin} live"), green),
+        Span::styled(" · polling 1s", dim),
+        Span::raw("   "),
+        Span::styled(format!("+{add}"), green),
+        Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)),
+        Span::raw("   "),
+        Span::styled(format!("{n} changes · {m} files"), dim),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
@@ -403,6 +418,21 @@ mod tests {
         assert!(text.contains("▾"), "active file expanded");
         assert!(text.contains("▸"), "other file folded");
         assert!(text.contains("tweak the thing"), "active file's edit summary shown");
+    }
+
+    #[test]
+    fn status_strip_shows_live_totals_and_file_count() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![
+            ev_named("/wt/src/app.rs", 0, 1),
+            ev_named("/wt/src/ui.rs", 0, 2),
+        ]);
+        let buf = draw_app(&mut app, 100, 12);
+        let top: String = (0..100u16).map(|x| buf[(x, 0u16)].symbol()).collect();
+        assert!(top.contains("chronox"));
+        assert!(top.contains("live"));
+        assert!(top.contains("changes"));
+        assert!(top.contains("files"));
     }
 
     #[test]
