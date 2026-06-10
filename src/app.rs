@@ -10,8 +10,8 @@ use crate::render::change_detail_lines_styled;
 use sessionx::extract::{claude_session_files, load_full_change, resolve_line_in_file};
 use sessionx::nav::nav;
 use sessionx::{
-    ChangeEvent, ChangeSource, NavAction, NavKey, SideRow, Timeline, change_detail_side_by_side,
-    lang_for_path,
+    ChangeEvent, ChangeSource, ChangeTool, NavAction, NavKey, SideRow, Timeline,
+    change_detail_side_by_side, lang_for_path,
 };
 
 /// Default columns for the left (list) pane.
@@ -55,10 +55,84 @@ pub enum AppAction {
     None,
 }
 
+/// One file's worth of changes, newest-first, with rolled-up line counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileGroup {
+    pub file: PathBuf,
+    pub event_idxs: Vec<usize>, // newest-first, into App.events
+    pub add: u32,
+    pub del: u32,
+    pub is_new: bool, // single Write -> " new" tag
+}
+
+/// A row in the rendered list: a file header (always shown) or an edit row
+/// (shown only under the active/expanded file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibleRow {
+    Header { group: usize }, // index into `groups`
+    Edit { event: usize },   // index into App.events
+}
+
+/// Group `events` by `file_path`, preserving first-seen order. Because the
+/// timeline is newest-first, this yields most-recently-touched file first with
+/// edits newest-first inside each group. `counts[i]` is event `i`'s (add, del).
+fn build_groups(events: &[ChangeEvent], counts: &[(u32, u32)]) -> Vec<FileGroup> {
+    let mut groups: Vec<FileGroup> = Vec::new();
+    for (i, ev) in events.iter().enumerate() {
+        let (a, d) = counts.get(i).copied().unwrap_or((0, 0));
+        match groups.iter_mut().find(|g| g.file == ev.file_path) {
+            Some(g) => {
+                g.event_idxs.push(i);
+                g.add += a;
+                g.del += d;
+                g.is_new = false; // more than one change -> not a fresh new file
+            }
+            None => groups.push(FileGroup {
+                file: ev.file_path.clone(),
+                event_idxs: vec![i],
+                add: a,
+                del: d,
+                is_new: ev.tool == ChangeTool::Write,
+            }),
+        }
+    }
+    groups
+}
+
+/// Flatten groups into the visible-row sequence: every header in order, with
+/// the active group's edit rows inserted directly under its header.
+fn build_visible(groups: &[FileGroup], active: usize) -> Vec<VisibleRow> {
+    let mut out = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        out.push(VisibleRow::Header { group: gi });
+        if gi == active {
+            for &event in &g.event_idxs {
+                out.push(VisibleRow::Edit { event });
+            }
+        }
+    }
+    out
+}
+
+/// What the cursor is "on", independent of row indices, so selection survives a
+/// rebuild that expands/collapses rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SelTarget {
+    File(PathBuf),
+    Edit(ChangeSource),
+}
+
 pub struct App {
     pub worktree: PathBuf,
     timeline: Timeline,
     events: Vec<ChangeEvent>,
+    groups: Vec<FileGroup>,
+    visible: Vec<VisibleRow>,
+    pub active_group: usize,
+    // `ChangeSource` is `Eq` but not `Hash`, so we memoize in an association
+    // list rather than a `HashMap`. Lookups stay keyed by `ChangeSource`.
+    counts: Vec<(ChangeSource, (u32, u32))>,
+    pub spinner_frame: usize,
     pub selected: usize,
     pub focus: Focus,
     pub diff_scroll: usize,
@@ -74,19 +148,6 @@ pub struct App {
     /// dismissed on the next keypress.
     status: Option<String>,
     pub should_quit: bool,
-}
-
-/// Pure selection re-pin: given the freshly merged `events`, the source of the
-/// previously-selected change, and the old index, return the index to select.
-/// Keeps the cursor on the same change when new changes are prepended; clamps
-/// when that change is gone.
-fn repin(events: &[ChangeEvent], pinned: Option<&ChangeSource>, old: usize) -> usize {
-    if let Some(src) = pinned
-        && let Some(idx) = events.iter().position(|e| &e.source == src)
-    {
-        return idx;
-    }
-    old.min(events.len().saturating_sub(1))
 }
 
 /// Build the full, un-clipped styled diff for one change. Re-reads the session
@@ -113,6 +174,11 @@ impl App {
             worktree,
             timeline: Timeline::default(),
             events: Vec::new(),
+            groups: Vec::new(),
+            visible: Vec::new(),
+            active_group: 0,
+            counts: Vec::new(),
+            spinner_frame: 0,
             selected: 0,
             focus: Focus::List,
             diff_scroll: 0,
@@ -133,8 +199,134 @@ impl App {
         &self.events
     }
 
+    /// Memoized (add, del) for event `idx`, computed from its bounded detail.
+    fn ensure_count(&mut self, idx: usize) {
+        if let Some(ev) = self.events.get(idx) {
+            let src = ev.source.clone();
+            if !self.counts.iter().any(|(s, _)| s == &src) {
+                let c = crate::render::change_counts(&ev.detail);
+                self.counts.push((src, c));
+            }
+        }
+    }
+
+    /// Read cached counts for event `idx` (0,0 if absent — should not happen
+    /// after `rebuild`, which populates every event).
+    pub fn event_counts(&self, idx: usize) -> (u32, u32) {
+        self.events
+            .get(idx)
+            .and_then(|ev| {
+                self.counts
+                    .iter()
+                    .find(|(s, _)| s == &ev.source)
+                    .map(|(_, c)| *c)
+            })
+            .unwrap_or((0, 0))
+    }
+
+    /// The semantic target currently under the cursor, read from current state.
+    fn current_target(&self) -> Option<SelTarget> {
+        match self.visible.get(self.selected)? {
+            VisibleRow::Header { group } => {
+                Some(SelTarget::File(self.groups.get(*group)?.file.clone()))
+            }
+            VisibleRow::Edit { event } => {
+                Some(SelTarget::Edit(self.events.get(*event)?.source.clone()))
+            }
+        }
+    }
+
+    /// Which group a target belongs to (0 if not found / no target).
+    fn group_for_target(&self, target: &Option<SelTarget>) -> usize {
+        match target {
+            Some(SelTarget::File(p)) => self.groups.iter().position(|g| &g.file == p).unwrap_or(0),
+            Some(SelTarget::Edit(src)) => self
+                .groups
+                .iter()
+                .position(|g| {
+                    g.event_idxs
+                        .iter()
+                        .any(|&i| self.events.get(i).map(|e| &e.source) == Some(src))
+                })
+                .unwrap_or(0),
+            None => 0,
+        }
+    }
+
+    /// Index in `visible` matching the target, if present.
+    fn locate(&self, target: &Option<SelTarget>) -> Option<usize> {
+        let target = target.as_ref()?;
+        self.visible.iter().position(|row| match (row, target) {
+            (VisibleRow::Header { group }, SelTarget::File(p)) => {
+                self.groups.get(*group).map(|g| &g.file) == Some(p)
+            }
+            (VisibleRow::Edit { event }, SelTarget::Edit(src)) => {
+                self.events.get(*event).map(|e| &e.source) == Some(src)
+            }
+            _ => false,
+        })
+    }
+
+    /// Re-assign events and rebuild, repinning the cursor onto the same semantic
+    /// target it was on *before* the swap. Use this whenever the event list is
+    /// replaced — `current_target` resolves `Edit` targets against `self.events`,
+    /// so the target must be read while `events`/`visible` are still consistent.
+    fn set_events_and_rebuild(&mut self, events: Vec<ChangeEvent>) {
+        let target = self.current_target();
+        self.events = events;
+        self.rebuild_with_target(target);
+    }
+
+    /// Rebuild groups + visible from the current events, keeping the cursor on
+    /// the same semantic target (accordion: the target's file is active).
+    fn rebuild(&mut self) {
+        let target = self.current_target();
+        self.rebuild_with_target(target);
+    }
+
+    /// Rebuild against an explicitly-captured target (see `set_events_and_rebuild`).
+    fn rebuild_with_target(&mut self, target: Option<SelTarget>) {
+        // Populate the count cache for every event (memoized; cheap after first).
+        for i in 0..self.events.len() {
+            self.ensure_count(i);
+        }
+        let counts: Vec<(u32, u32)> = (0..self.events.len())
+            .map(|i| self.event_counts(i))
+            .collect();
+        self.groups = build_groups(&self.events, &counts);
+        self.active_group = self.group_for_target(&target);
+        self.visible = build_visible(&self.groups, self.active_group);
+        self.selected = self
+            .locate(&target)
+            .unwrap_or_else(|| self.selected.min(self.visible.len().saturating_sub(1)));
+    }
+
+    /// Event index the selected row resolves to: an edit's own event, or a
+    /// header's group's newest event.
+    pub fn selected_event_idx(&self) -> Option<usize> {
+        match self.visible.get(self.selected)? {
+            VisibleRow::Edit { event } => Some(*event),
+            VisibleRow::Header { group } => self.groups.get(*group)?.event_idxs.first().copied(),
+        }
+    }
+
+    pub fn groups(&self) -> &[FileGroup] {
+        &self.groups
+    }
+
+    pub fn visible(&self) -> &[VisibleRow] {
+        &self.visible
+    }
+
+    /// Session line-count totals across all groups.
+    pub fn session_totals(&self) -> (u32, u32) {
+        self.groups
+            .iter()
+            .fold((0, 0), |(a, d), g| (a + g.add, d + g.del))
+    }
+
     pub fn selected_event(&self) -> Option<&ChangeEvent> {
-        self.events.get(self.selected)
+        self.events.get(self.selected_event_idx()?)
     }
 
     /// Absolute path and 1-based line of the current selection, for handing to
@@ -143,7 +335,7 @@ impl App {
     /// `resolve_line_in_file` returns 1 when the file is unreadable, so the
     /// line is always >= 1.
     pub fn selected_path_and_line(&self) -> Option<(PathBuf, u32)> {
-        let ev = self.events.get(self.selected)?;
+        let ev = self.events.get(self.selected_event_idx()?)?;
         let detail = load_full_change(ev).unwrap_or_else(|| ev.detail.clone());
         let line = resolve_line_in_file(&ev.file_path, &detail);
         Some((ev.file_path.clone(), line))
@@ -170,14 +362,17 @@ impl App {
     /// without touching the filesystem.
     #[cfg(test)]
     pub(crate) fn set_events_for_test_pub(&mut self, events: Vec<ChangeEvent>) {
-        self.events = events;
+        self.set_events_and_rebuild(events);
     }
 
     /// Single entry point for all state changes.
     pub fn apply(&mut self, action: AppAction) {
         match action {
             AppAction::Quit => self.should_quit = true,
-            AppAction::Tick => self.refresh(),
+            AppAction::Tick => {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                self.refresh();
+            }
             AppAction::ToggleFocus => {
                 self.focus = match self.focus {
                     Focus::List => Focus::Diff,
@@ -210,7 +405,6 @@ impl App {
     }
 
     fn on_nav(&mut self, key: NavKey) {
-        // In Diff focus, ↑/↓ scroll the diff instead of moving the list.
         if self.focus == Focus::Diff {
             match key {
                 NavKey::Up => return self.scroll_diff(-1),
@@ -222,7 +416,7 @@ impl App {
                 _ => {}
             }
         }
-        let (new_sel, act) = nav(self.selected, key, self.events.len());
+        let (new_sel, act) = nav(self.selected, key, self.visible.len());
         match act {
             NavAction::Exit => self.should_quit = true,
             NavAction::Open(_) => self.focus = Focus::Diff,
@@ -231,6 +425,7 @@ impl App {
         if new_sel != self.selected {
             self.selected = new_sel;
             self.diff_scroll = 0;
+            self.rebuild(); // re-derive active file + visible rows
         }
     }
 
@@ -269,11 +464,10 @@ impl App {
     /// re-pin the cursor to the same change. Cheap to call on a tick — the
     /// sessionx `Timeline` reparses only files whose size/mtime changed.
     fn refresh(&mut self) {
-        let pinned = self.events.get(self.selected).map(|e| e.source.clone());
         let files = claude_session_files(&self.worktree);
         self.timeline.refresh(&files);
-        self.events = self.timeline.events().to_vec();
-        self.selected = repin(&self.events, pinned.as_ref(), self.selected);
+        let events = self.timeline.events().to_vec();
+        self.set_events_and_rebuild(events);
     }
 
     /// Styled diff lines for the current selection, built lazily and cached by
@@ -282,7 +476,10 @@ impl App {
     pub fn diff_lines(&mut self) -> &[Line<'static>] {
         // Safe to key on ChangeSource: Claude Code session logs are append-only,
         // so a given (file, line, index) is written once and never mutated.
-        let src = self.events.get(self.selected).map(|e| e.source.clone());
+        let idx = self.selected_event_idx();
+        let src = idx
+            .and_then(|i| self.events.get(i))
+            .map(|e| e.source.clone());
         let needs = match (&self.diff_cache, &src) {
             (Some((cached, _)), Some(s)) => cached != s,
             _ => true,
@@ -290,9 +487,8 @@ impl App {
         if needs {
             match src {
                 Some(s) => {
-                    let lines = self
-                        .events
-                        .get(self.selected)
+                    let lines = idx
+                        .and_then(|i| self.events.get(i))
                         .map(build_diff_lines)
                         .unwrap_or_default();
                     self.diff_cache = Some((s, lines));
@@ -309,7 +505,10 @@ impl App {
     /// Styled side-by-side rows for the current selection, cached by the
     /// selected change's `ChangeSource` (mirrors `diff_lines`).
     pub fn diff_side_rows(&mut self) -> &[SideRow] {
-        let src = self.events.get(self.selected).map(|e| e.source.clone());
+        let idx = self.selected_event_idx();
+        let src = idx
+            .and_then(|i| self.events.get(i))
+            .map(|e| e.source.clone());
         let needs = match (&self.side_cache, &src) {
             (Some((cached, _)), Some(s)) => cached != s,
             _ => true,
@@ -317,9 +516,8 @@ impl App {
         if needs {
             match src {
                 Some(s) => {
-                    let rows = self
-                        .events
-                        .get(self.selected)
+                    let rows = idx
+                        .and_then(|i| self.events.get(i))
                         .map(build_side_rows)
                         .unwrap_or_default();
                     self.side_cache = Some((s, rows));
@@ -338,6 +536,21 @@ impl App {
 mod tests {
     use super::*;
     use sessionx::{ChangeDetail, ChangeTool};
+
+    fn write_ev(ts: i64, file: &str, line_index: usize) -> ChangeEvent {
+        ChangeEvent {
+            timestamp_ms: ts,
+            tool: ChangeTool::Write,
+            file_path: PathBuf::from(file),
+            summary: String::new(),
+            detail: ChangeDetail::Write { head: "x".into() },
+            source: ChangeSource {
+                session_file: PathBuf::from("s.jsonl"),
+                line_index,
+                index_in_line: 0,
+            },
+        }
+    }
 
     fn ev(ts: i64, file: &str, line_index: usize) -> ChangeEvent {
         ChangeEvent {
@@ -358,35 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn repin_keeps_same_event_when_new_events_prepended() {
-        let old_events = [ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)];
-        let pinned = old_events[1].source.clone(); // selected b.rs at index 1
-        let new_events = vec![
-            ev(3, "/wt/new.rs", 9),
-            ev(2, "/wt/a.rs", 1),
-            ev(1, "/wt/b.rs", 2),
-        ];
-        assert_eq!(repin(&new_events, Some(&pinned), 1), 2);
-    }
-
-    #[test]
-    fn repin_clamps_when_event_gone() {
-        let new_events = vec![ev(3, "/wt/new.rs", 9)];
-        let gone = ChangeSource {
-            session_file: PathBuf::from("x.jsonl"),
-            line_index: 99,
-            index_in_line: 0,
-        };
-        assert_eq!(repin(&new_events, Some(&gone), 5), 0);
-    }
-
-    #[test]
-    fn repin_empty_is_zero() {
-        assert_eq!(repin(&[], None, 3), 0);
-    }
-
-    #[test]
-    fn list_focus_moves_selection() {
+    fn list_focus_moves_over_visible_rows() {
         let mut app = App::bare(PathBuf::from("/wt"));
         app.set_events_for_test_pub(vec![
             ev(3, "/wt/a.rs", 1),
@@ -394,12 +579,14 @@ mod tests {
             ev(1, "/wt/c.rs", 3),
         ]);
         app.focus = Focus::List;
-        app.apply(AppAction::Nav(NavKey::Down));
-        assert_eq!(app.selected, 1);
-        app.apply(AppAction::Nav(NavKey::Bottom));
-        assert_eq!(app.selected, 2);
-        app.apply(AppAction::Nav(NavKey::Top));
-        assert_eq!(app.selected, 0);
+        // Starts on a.rs header (active); its single edit is event 0.
+        assert_eq!(app.selected_event_idx(), Some(0));
+        app.apply(AppAction::Nav(NavKey::Down)); // onto a.rs's edit
+        assert_eq!(app.selected_event_idx(), Some(0));
+        app.apply(AppAction::Nav(NavKey::Bottom)); // last visible row -> c.rs header
+        assert_eq!(app.selected_event_idx(), Some(2));
+        app.apply(AppAction::Nav(NavKey::Top)); // back to a.rs header
+        assert_eq!(app.selected_event_idx(), Some(0));
     }
 
     #[test]
@@ -410,6 +597,23 @@ mod tests {
         app.diff_scroll = 7;
         app.apply(AppAction::Nav(NavKey::Down));
         assert_eq!(app.diff_scroll, 0);
+    }
+
+    #[test]
+    fn rebuild_keeps_cursor_on_same_edit_when_new_change_prepended() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev(2, "/wt/a.rs", 1), ev(1, "/wt/b.rs", 2)]);
+        app.focus = Focus::List;
+        app.apply(AppAction::Nav(NavKey::Down)); // onto a.rs's edit (event 0, source line 1)
+        assert_eq!(app.selected_event_idx(), Some(0));
+        // A newer change to a different file is prepended; a.rs's edit shifts down.
+        app.set_events_for_test_pub(vec![
+            ev(3, "/wt/new.rs", 9),
+            ev(2, "/wt/a.rs", 1),
+            ev(1, "/wt/b.rs", 2),
+        ]);
+        // Still pinned to the same a.rs change (now event index 1).
+        assert_eq!(app.selected_event_idx(), Some(1));
     }
 
     #[test]
@@ -572,6 +776,66 @@ mod tests {
     fn diff_side_rows_empty_when_no_events() {
         let mut app = App::bare(PathBuf::from("/wt"));
         assert!(app.diff_side_rows().is_empty());
+    }
+
+    #[test]
+    fn build_groups_orders_by_first_seen_and_rolls_up() {
+        // newest-first input (as sessionx hands us): a, a, b, write-c
+        let events = vec![
+            ev(4, "/wt/a.rs", 1),
+            ev(3, "/wt/a.rs", 2),
+            ev(2, "/wt/b.rs", 3),
+            write_ev(1, "/wt/c.rs", 4),
+        ];
+        // per-event (add, del)
+        let counts = vec![(10, 1), (4, 0), (2, 2), (58, 0)];
+        let groups = build_groups(&events, &counts);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].file, PathBuf::from("/wt/a.rs"));
+        assert_eq!(groups[0].event_idxs, vec![0, 1]);
+        assert_eq!((groups[0].add, groups[0].del), (14, 1));
+        assert!(!groups[0].is_new);
+
+        assert_eq!(groups[1].file, PathBuf::from("/wt/b.rs"));
+        assert_eq!((groups[1].add, groups[1].del), (2, 2));
+
+        assert_eq!(groups[2].file, PathBuf::from("/wt/c.rs"));
+        assert!(groups[2].is_new, "single Write -> new file");
+    }
+
+    #[test]
+    fn build_visible_expands_only_active_group() {
+        let events = vec![
+            ev(3, "/wt/a.rs", 1),
+            ev(2, "/wt/a.rs", 2),
+            ev(1, "/wt/b.rs", 3),
+        ];
+        let counts = vec![(1, 0), (1, 0), (1, 0)];
+        let groups = build_groups(&events, &counts);
+
+        // active = group 1 (b.rs): headers for both files, b's single edit nested.
+        let vis = build_visible(&groups, 1);
+        assert_eq!(
+            vis,
+            vec![
+                VisibleRow::Header { group: 0 },
+                VisibleRow::Header { group: 1 },
+                VisibleRow::Edit { event: 2 },
+            ]
+        );
+
+        // active = group 0 (a.rs): a's two edits nested, b folded.
+        let vis = build_visible(&groups, 0);
+        assert_eq!(
+            vis,
+            vec![
+                VisibleRow::Header { group: 0 },
+                VisibleRow::Edit { event: 0 },
+                VisibleRow::Edit { event: 1 },
+                VisibleRow::Header { group: 1 },
+            ]
+        );
     }
 
     #[test]

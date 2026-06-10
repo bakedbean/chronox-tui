@@ -5,12 +5,14 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use crate::render::{clip_line_to_width, entry_lines, relative_display, side_cell_to_line};
+use crate::render::{
+    clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line,
+};
 use sessionx::nav::{adjust_scroll, clamp_scroll};
 
-use crate::app::{App, DiffView, Focus};
+use crate::app::{App, DiffView, Focus, VisibleRow};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
@@ -25,7 +27,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     .split(area);
     let (title_area, body, footer) = (chunks[0], chunks[1], chunks[2]);
 
-    render_title(f, title_area, app);
+    render_status_strip(f, title_area, app);
     render_footer(f, footer, app);
 
     if app.events().is_empty() {
@@ -37,26 +39,164 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let cols = Layout::horizontal([
-        Constraint::Length(app.list_width),
-        Constraint::Length(1), // separator / drag handle
-        Constraint::Min(0),
-    ])
-    .split(body);
-    render_list(f, cols[0], app);
-    render_separator(f, cols[1], app);
-    render_diff(f, cols[2], app);
+    // The single frame needs room for two border rows + a content row, and a
+    // left border + divider + right border. Below that, just bail gracefully
+    // rather than underflow the frame geometry.
+    if body.height < 3 || body.width < 5 {
+        return;
+    }
+
+    // Keep `list_width` consistent with the divider `render_frame` actually
+    // draws (clamped inside the frame). `reclamp_split` only floors at
+    // `MIN_LIST`, so on a terminal narrower than `MIN_LIST + 2` the drawn
+    // divider would otherwise diverge from `list_width` — which `input.rs` uses
+    // for mouse divider hit-testing and diff-wheel routing.
+    app.list_width = app.list_width.min(body.width.saturating_sub(2));
+
+    let (left, right) = render_frame(f, body, app);
+    render_list_inner(f, left, app);
+    render_diff_inner(f, right, app);
 }
 
-fn render_title(f: &mut Frame, area: Rect, app: &App) {
-    let title = format!("chronox — {}", app.worktree.display());
+fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
+    let faint = Style::default().fg(Color::DarkGray);
+    let list_focus = app.focus == Focus::List;
+    let left_title_style = if list_focus {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let right_title_style = if list_focus {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    let x0 = body.x;
+    let y0 = body.y;
+    let w = body.width;
+    let h = body.height;
+    let right_col = (x0 + w).saturating_sub(1);
+    // Divider column: list_width cells in from the left edge (matches the mouse
+    // hit-test in input.rs, which uses last_area.x + list_width).
+    let lo = x0 + 1;
+    let hi = right_col.saturating_sub(1).max(lo);
+    let dx = (x0 + app.list_width).clamp(lo, hi);
+
+    let left_title = "chronox · by file";
+    let right_title = match app.selected_event() {
+        Some(ev) => format!(
+            "{} · {}",
+            relative_display(&ev.file_path, &app.worktree),
+            ev.tool.label()
+        ),
+        None => "—".to_string(),
+    };
+
+    // ── top border ────────────────────────────────────────────────────────
+    // Built as two fixed-width segments so the `┬` always lands exactly on the
+    // divider column `dx` (matching the bottom border and the body divider),
+    // regardless of title length. Titles are clipped to their segment width.
+    //
+    //   left segment  (exactly `left_seg_w` cols):  "┌─ " <title> " " ──…
+    //   right segment (exactly `right_seg_w` cols): "┬─ " <title> " " ──… "┐"
+    let left_seg_w = (dx.saturating_sub(x0)) as usize;
+    let title_budget = left_seg_w.saturating_sub(4); // "┌─ " (3) + trailing " " (1)
+    let lt: String = left_title.chars().take(title_budget).collect();
+    let fill_left = left_seg_w.saturating_sub(3 + lt.chars().count() + 1);
+    let mut top: Vec<Span> = vec![
+        Span::styled("┌─ ", faint),
+        Span::styled(lt, left_title_style),
+        Span::styled(" ", faint),
+        Span::styled("─".repeat(fill_left), faint),
+    ];
+
+    let right_seg_w = (right_col + 1).saturating_sub(dx) as usize;
+    let rtitle_budget = right_seg_w.saturating_sub(5); // "┬─ " (3) + " " (1) + "┐" (1)
+    let rt: String = right_title.chars().take(rtitle_budget).collect();
+    let fill_right = right_seg_w.saturating_sub(3 + rt.chars().count() + 1 + 1);
+    top.push(Span::styled("┬─ ", faint));
+    top.push(Span::styled(rt, right_title_style));
+    top.push(Span::styled(" ", faint));
+    top.push(Span::styled("─".repeat(fill_right), faint));
+    top.push(Span::styled("┐", faint));
+    f.render_widget(Paragraph::new(Line::from(top)), Rect::new(x0, y0, w, 1));
+
+    // ── bottom border: └─...─┴─...─┘ ──────────────────────────────────────
+    let mut bottom: Vec<Span> = vec![Span::styled("└", faint)];
+    bottom.push(Span::styled(
+        "─".repeat(dx.saturating_sub(x0 + 1) as usize),
+        faint,
+    ));
+    bottom.push(Span::styled("┴", faint));
+    bottom.push(Span::styled(
+        "─".repeat(right_col.saturating_sub(dx + 1) as usize),
+        faint,
+    ));
+    bottom.push(Span::styled("┘", faint));
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD),
-        ))),
-        area,
+        Paragraph::new(Line::from(bottom)),
+        Rect::new(x0, (y0 + h).saturating_sub(1), w, 1),
     );
+
+    // ── side + divider columns for the body rows ──────────────────────────
+    let divider_style = if app.resizing {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        faint
+    };
+    for y in (y0 + 1)..(y0 + h).saturating_sub(1) {
+        let left_edge: Vec<Line> = vec![Line::from(Span::styled("│", faint))];
+        f.render_widget(Paragraph::new(left_edge.clone()), Rect::new(x0, y, 1, 1));
+        f.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled("│", divider_style))]),
+            Rect::new(dx, y, 1, 1),
+        );
+        f.render_widget(Paragraph::new(left_edge), Rect::new(right_col, y, 1, 1));
+    }
+
+    let left = Rect::new(x0 + 1, y0 + 1, dx.saturating_sub(x0 + 1), h.saturating_sub(2));
+    let right = Rect::new(
+        dx + 1,
+        y0 + 1,
+        right_col.saturating_sub(dx + 1),
+        h.saturating_sub(2),
+    );
+    (left, right)
+}
+
+const SPINNER: [&str; 9] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"];
+
+fn render_status_strip(f: &mut Frame, area: Rect, app: &App) {
+    let green = Style::default().fg(Color::Green);
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let (add, del) = app.session_totals();
+    let n = app.events().len();
+    let m = app.groups().len();
+    let spin = SPINNER[app.spinner_frame % SPINNER.len()];
+
+    let line = Line::from(vec![
+        Span::styled("● ", green),
+        Span::styled("chronox  ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(app.worktree.display().to_string(), dim),
+        Span::raw("   "),
+        Span::styled(format!("{spin} live"), green),
+        Span::styled(" · polling 1s", dim),
+        Span::raw("   "),
+        Span::styled(format!("+{add}"), green),
+        Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)),
+        Span::raw("   "),
+        Span::styled(format!("{n} changes · {m} files"), dim),
+    ]);
+    f.render_widget(Paragraph::new(line), area);
 }
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
@@ -65,10 +205,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let text: &str = match app.status() {
         Some(status) => status,
         None => match app.focus {
-            Focus::List => " ↑↓ move · e edit · d view · Tab focus diff · [ ] resize · q quit ",
-            Focus::Diff => {
-                " ↑↓/PgUp/PgDn scroll · e edit · d view · Tab focus list · [ ] resize · q quit "
-            }
+            Focus::List => " ↑↓ move · enter diff · d view · e edit · tab focus · q quit ",
+            Focus::Diff => " ↑↓/PgUp/PgDn scroll · d view · e edit · tab focus list · q quit ",
         },
     };
     f.render_widget(
@@ -80,27 +218,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn pane_block(title: &str, focused: bool) -> Block<'static> {
-    let border_style = if focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(Span::styled(format!(" {title} "), border_style))
-}
-
-fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = pane_block("timeline", app.focus == Focus::List);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+fn render_list_inner(f: &mut Frame, inner: Rect, app: &mut App) {
     let rows = inner.height as usize;
-    let len = app.events().len();
+    let len = app.visible().len();
     let scroll = clamp_scroll(
         adjust_scroll(app.list_scroll, app.selected, rows, len),
         len,
@@ -110,44 +230,48 @@ fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
     app.last_visible_rows = rows;
 
     let sel = app.selected;
+    let active = app.active_group;
     let width = inner.width;
     let mut lines: Vec<Line> = Vec::new();
-    for (i, ev) in app.events().iter().enumerate().skip(scroll).take(rows) {
-        for line in entry_lines(ev, &app.worktree, width, i == sel) {
-            lines.push(clip_line_to_width(&line, width as usize));
-        }
+    for (i, row) in app.visible().iter().enumerate().skip(scroll).take(rows) {
+        let line = match *row {
+            VisibleRow::Header { group } => {
+                let g = &app.groups()[group];
+                let rel = relative_display(&g.file, &app.worktree);
+                header_line(
+                    &rel,
+                    g.add,
+                    g.del,
+                    g.event_idxs.len(),
+                    g.is_new,
+                    group == active,
+                    group == active,
+                    width,
+                    i == sel,
+                )
+            }
+            VisibleRow::Edit { event } => {
+                let g = &app.groups()[active];
+                let last = g.event_idxs.last() == Some(&event);
+                let (add, del) = app.event_counts(event);
+                let ev = &app.events()[event];
+                edit_line(
+                    ev.timestamp_ms,
+                    add,
+                    del,
+                    &ev.summary,
+                    last,
+                    i == sel,
+                    width,
+                )
+            }
+        };
+        lines.push(clip_line_to_width(&line, width as usize));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_separator(f: &mut Frame, area: Rect, app: &App) {
-    let style = if app.resizing {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(Span::styled("│", style)))
-        .collect();
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_diff(f: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus == Focus::Diff;
-    let header = match app.selected_event() {
-        Some(ev) => format!(
-            "{} · {}",
-            relative_display(&ev.file_path, &app.worktree),
-            ev.tool.label()
-        ),
-        None => "—".to_string(),
-    };
-    let block = pane_block(&header, focused);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+fn render_diff_inner(f: &mut Frame, inner: Rect, app: &mut App) {
     match app.diff_view {
         DiffView::Block => render_diff_block(f, inner, app),
         DiffView::SideBySide => render_diff_side_by_side(f, inner, app),
@@ -242,6 +366,24 @@ mod tests {
         }
     }
 
+    fn ev_named(file: &str, ts: i64, line_index: usize) -> ChangeEvent {
+        ChangeEvent {
+            timestamp_ms: ts,
+            tool: ChangeTool::Edit,
+            file_path: PathBuf::from(file),
+            summary: "tweak the thing".into(),
+            detail: ChangeDetail::Edit {
+                old: "old".into(),
+                new: "new".into(),
+            },
+            source: ChangeSource {
+                session_file: PathBuf::from("s.jsonl"),
+                line_index,
+                index_in_line: 0,
+            },
+        }
+    }
+
     fn buffer_text(buf: &Buffer) -> String {
         buf.content.iter().map(|c| c.symbol()).collect()
     }
@@ -260,20 +402,40 @@ mod tests {
     }
 
     #[test]
-    fn two_pane_layout_places_separator_at_list_width() {
+    fn single_frame_has_top_and_bottom_divider_junctions() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
-        app.list_width = 20;
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
+        app.list_width = 30;
         let buf = draw_app(&mut app, 80, 12);
-        // Body starts at y=1 (after the title row); separator column == list_width.
-        assert_eq!(buf[(20u16, 3u16)].symbol(), "│");
+        // Status strip is y=0; the body frame spans y=1..=10, footer y=11.
+        // Divider column = body.x + list_width = 30.
+        assert_eq!(buf[(30u16, 1u16)].symbol(), "┬", "top divider junction");
+        assert_eq!(buf[(30u16, 10u16)].symbol(), "┴", "bottom divider junction");
+        assert_eq!(buf[(30u16, 5u16)].symbol(), "│", "divider body");
     }
 
     #[test]
-    fn footer_advertises_the_edit_key() {
+    fn frame_titles_label_both_panes() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        let buf = draw_app(&mut app, 80, 10);
-        assert!(buffer_text(&buf).contains("e edit"));
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
+        let buf = draw_app(&mut app, 80, 12);
+        let top: String = (0..80u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        assert!(top.contains("chronox · by file"), "left title");
+        assert!(top.contains("main.rs"), "right title shows the file");
+    }
+
+    #[test]
+    fn footer_lists_grouped_timeline_hints() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        let buf = draw_app(&mut app, 100, 10);
+        let text = buffer_text(&buf);
+        assert!(text.contains("enter diff"));
+        assert!(text.contains("e edit"));
+        assert!(text.contains("tab focus"));
+        assert!(
+            !text.contains("space fold"),
+            "no space key in accordion-only mode"
+        );
     }
 
     #[test]
@@ -288,13 +450,13 @@ mod tests {
     }
 
     #[test]
-    fn focus_indicator_colors_active_pane_border() {
+    fn focused_pane_title_is_cyan() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
         app.focus = Focus::List;
         let buf = draw_app(&mut app, 80, 12);
-        // List block top-left corner is at (0, 1) — under the title row.
-        assert_eq!(buf[(0u16, 1u16)].fg, Color::Cyan);
+        // The left title 'chronox · by file' starts at column 3 of the top row.
+        assert_eq!(buf[(3u16, 1u16)].fg, Color::Cyan);
     }
 
     #[test]
@@ -318,10 +480,60 @@ mod tests {
         // to the LEFT of, the added marker — otherwise a regression to the
         // single-column block view would still satisfy the contains() asserts.
         let w = 80usize;
-        let minus = buf.content.iter().position(|c| c.symbol() == "-").unwrap();
-        let plus = buf.content.iter().position(|c| c.symbol() == "+").unwrap();
+        // The list pane renders gauge counts containing '-'/'+', so restrict the
+        // positional check to the diff pane (columns right of list + separator).
+        let diff_start = app.list_width as usize + 1;
+        let in_diff = |idx: usize| idx % w >= diff_start && idx / w > 0;
+        let minus = buf
+            .content
+            .iter()
+            .enumerate()
+            .find(|(i, c)| c.symbol() == "-" && in_diff(*i))
+            .map(|(i, _)| i)
+            .expect("a '-' in the diff pane");
+        let plus = buf
+            .content
+            .iter()
+            .enumerate()
+            .find(|(i, c)| c.symbol() == "+" && in_diff(*i))
+            .map(|(i, _)| i)
+            .expect("a '+' in the diff pane");
         assert_eq!(minus / w, plus / w, "old and new render on the same row");
         assert!(minus % w < plus % w, "old column is left of new column");
+    }
+
+    #[test]
+    fn list_shows_file_header_and_nested_edit() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![
+            ev_named("/wt/src/app.rs", 0, 1),
+            ev_named("/wt/src/ui.rs", 0, 2),
+        ]);
+        app.list_width = 50; // wide enough for the nested edit summary to render unclipped
+        let buf = draw_app(&mut app, 100, 12);
+        let text = buffer_text(&buf);
+        assert!(text.contains("src/app.rs"), "file header rendered");
+        assert!(text.contains("▾"), "active file expanded");
+        assert!(text.contains("▸"), "other file folded");
+        assert!(
+            text.contains("tweak the thing"),
+            "active file's edit summary shown"
+        );
+    }
+
+    #[test]
+    fn status_strip_shows_live_totals_and_file_count() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![
+            ev_named("/wt/src/app.rs", 0, 1),
+            ev_named("/wt/src/ui.rs", 0, 2),
+        ]);
+        let buf = draw_app(&mut app, 100, 12);
+        let top: String = (0..100u16).map(|x| buf[(x, 0u16)].symbol()).collect();
+        assert!(top.contains("chronox"));
+        assert!(top.contains("live"));
+        assert!(top.contains("changes"));
+        assert!(top.contains("files"));
     }
 
     #[test]
@@ -332,5 +544,38 @@ mod tests {
         let buf = draw_app(&mut app, 80, 12);
         let text = buffer_text(&buf);
         assert!(text.contains("- old") && text.contains("+ new"));
+    }
+
+    #[test]
+    fn draw_does_not_panic_at_tiny_sizes() {
+        // Regression: render_frame underflowed u16 subtractions at small bodies.
+        for w in 1u16..=12 {
+            for h in 1u16..=6 {
+                let mut app = App::bare(PathBuf::from("/wt"));
+                app.set_events_for_test_pub(vec![
+                    ev_named("/wt/src/app.rs", 0, 1),
+                    ev_named("/wt/src/ui.rs", 0, 2),
+                ]);
+                // Must not panic at any size.
+                let _ = draw_app(&mut app, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn list_width_clamped_to_frame_on_narrow_terminal() {
+        // On a terminal narrower than MIN_LIST + 2, reclamp_split floors
+        // list_width at MIN_LIST while the drawn divider is clamped inside the
+        // frame. draw must reconcile them so list_width matches the rendered
+        // divider (which input.rs uses for mouse hit-testing).
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/app.rs", 0, 1)]);
+        app.list_width = 30; // wider than the frame can hold
+        let w = 12u16; // body.width == 12 for a full-width terminal at x=0
+        let _ = draw_app(&mut app, w, 8);
+        assert!(
+            app.list_width <= w.saturating_sub(2),
+            "divider stays inside the frame so it matches the mouse hit-test"
+        );
     }
 }

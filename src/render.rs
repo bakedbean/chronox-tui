@@ -5,7 +5,6 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use sessionx::event::ChangeEvent;
 use sessionx::syntax::{
     CellKind, DiffCell, DiffLine, DiffMarker, LangSpec, Token, TokenKind, change_detail_diff,
 };
@@ -19,6 +18,170 @@ fn style_for(kind: TokenKind) -> Style {
         TokenKind::Number => Style::default().fg(Color::Cyan),
         TokenKind::Default => Style::default(),
     }
+}
+
+/// Count added vs removed lines for a change by running its bounded `detail`
+/// through `change_detail_diff` and tallying markers. `base_line`/`lang` do not
+/// affect counts, so we pass neutral values. Source A in the design (no I/O).
+pub fn change_counts(detail: &sessionx::event::ChangeDetail) -> (u32, u32) {
+    let mut add = 0;
+    let mut del = 0;
+    for dl in change_detail_diff(detail, 1, None) {
+        match dl.marker {
+            DiffMarker::Added => add += 1,
+            DiffMarker::Removed => del += 1,
+        }
+    }
+    (add, del)
+}
+
+/// Fixed-width magnitude bar: `add` green cells + `del` red cells in a
+/// `width`-cell gauge, the remainder faint `▱`. Mirrors the design's `statBar`.
+pub fn stat_bar(add: u32, del: u32, width: usize) -> Vec<Span<'static>> {
+    let total = (add + del).max(1) as f64;
+    let mut g = ((add as f64 / total) * width as f64).round() as usize;
+    let mut r = ((del as f64 / total) * width as f64).round() as usize;
+    if add > 0 && g == 0 {
+        g = 1;
+    }
+    if del > 0 && r == 0 {
+        r = 1;
+    }
+    while g + r > width {
+        if r > g {
+            r -= 1;
+        } else {
+            g -= 1;
+        }
+    }
+    let empty = width - g - r;
+    vec![
+        Span::styled("▰".repeat(g), Style::default().fg(Color::Green)),
+        Span::styled("▰".repeat(r), Style::default().fg(Color::Red)),
+        Span::styled("▱".repeat(empty), Style::default().fg(Color::DarkGray)),
+    ]
+}
+
+/// Pad a span list to `width` columns; when `selected`, fill the row with the
+/// blue selection background. Char-based width (matches `clip_line_to_width`).
+fn finish(mut spans: Vec<Span<'static>>, width: u16, selected: bool) -> Line<'static> {
+    let width = width as usize;
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    if selected {
+        let bg = Color::Rgb(0x24, 0x30, 0x49);
+        for s in &mut spans {
+            s.style = s.style.bg(bg);
+        }
+    }
+    Line::from(spans)
+}
+
+/// A grouped file-header row: `<caret><path>[ new]<pad><gauge> +A[ -D]<pad><count>`.
+#[allow(clippy::too_many_arguments)]
+pub fn header_line(
+    file_rel: &str,
+    add: u32,
+    del: u32,
+    count: usize,
+    is_new: bool,
+    expanded: bool,
+    active: bool,
+    width: u16,
+    selected: bool,
+) -> Line<'static> {
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let (caret, caret_style) = if expanded {
+        ("▾ ", Style::default().fg(Color::Cyan))
+    } else {
+        ("▸ ", dim)
+    };
+    let path_style = if active {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    // Right block: gauge + " " + "+A" [+ " -D"] + "  count".
+    let mut right = stat_bar(add, del, 4);
+    right.push(Span::raw(" "));
+    right.push(Span::styled(
+        format!("+{add}"),
+        Style::default().fg(Color::Green),
+    ));
+    if del > 0 {
+        right.push(Span::styled(
+            format!(" -{del}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    right.push(Span::styled(format!("  {count}"), dim));
+    let right_len: usize = right.iter().map(|s| s.content.chars().count()).sum();
+
+    let new_len = if is_new { 4 } else { 0 }; // " new"
+    let caret_len = 2;
+    let budget = (width as usize).saturating_sub(caret_len + new_len + right_len + 1);
+    let path = abbreviate_path(file_rel, budget);
+
+    let left_len = caret_len + path.chars().count() + new_len;
+    let gap = (width as usize).saturating_sub(left_len + right_len).max(1);
+
+    let mut spans = vec![
+        Span::styled(caret, caret_style),
+        Span::styled(path, path_style),
+    ];
+    if is_new {
+        spans.push(Span::styled(" new", Style::default().fg(Color::Blue)));
+    }
+    spans.push(Span::raw(" ".repeat(gap)));
+    spans.extend(right);
+    finish(spans, width, selected)
+}
+
+/// A nested edit row under the active file:
+/// `  <connector> <HH:MM>  +a[ -d]  <summary>`.
+pub fn edit_line(
+    timestamp_ms: i64,
+    add: u32,
+    del: u32,
+    summary: &str,
+    last: bool,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
+    let faint = Style::default().fg(Color::DarkGray);
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    let connector = if last { "└ " } else { "├ " };
+    let summary_style = if selected {
+        Style::default().fg(Color::White)
+    } else {
+        dim
+    };
+
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(connector, faint),
+        Span::styled(hhmm(timestamp_ms), dim),
+        Span::raw("  "),
+        Span::styled(format!("+{add}"), Style::default().fg(Color::Green)),
+    ];
+    if del > 0 {
+        spans.push(Span::styled(
+            format!(" -{del}"),
+            Style::default().fg(Color::Red),
+        ));
+    }
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(summary.to_string(), summary_style));
+    finish(spans, width, selected)
 }
 
 fn token_spans(code: &[Token]) -> Vec<Span<'static>> {
@@ -97,7 +260,7 @@ pub fn clip_line_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
     Line::from(out)
 }
 
-// ── entry_lines and display helpers from chronology_bar.rs ───────────────────
+// ── display helpers from chronology_bar.rs ───────────────────────────────────
 
 /// Worktree-relative display path, falling back to the full path when the file
 /// is not under the worktree.
@@ -166,53 +329,12 @@ pub fn hhmm(timestamp_ms: i64) -> String {
     format!("{h:02}:{m:02}")
 }
 
-/// One bar row: `HH:MM <abbreviated path>`, reversed when `selected`.
-pub fn entry_lines(
-    ev: &ChangeEvent,
-    worktree: &Path,
-    width: u16,
-    selected: bool,
-) -> Vec<Line<'static>> {
-    let rel = relative_display(&ev.file_path, worktree);
-    let path_budget = (width as usize).saturating_sub(6);
-    let path = abbreviate_path(&rel, path_budget);
-    let style = if selected {
-        Style::default().add_modifier(Modifier::REVERSED)
-    } else {
-        Style::default()
-    };
-    let time_style = if selected {
-        Style::default().add_modifier(Modifier::REVERSED | Modifier::DIM)
-    } else {
-        Style::default().add_modifier(Modifier::DIM)
-    };
-    vec![Line::from(vec![
-        Span::styled(hhmm(ev.timestamp_ms), time_style),
-        Span::styled(" ", style),
-        Span::styled(path, style),
-    ])]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
-    use sessionx::event::{ChangeDetail, ChangeSource, ChangeTool};
-    use std::path::{Path, PathBuf};
-
-    fn ev(file: &str, summary: &str) -> ChangeEvent {
-        ChangeEvent {
-            timestamp_ms: 0,
-            tool: ChangeTool::Edit,
-            file_path: PathBuf::from(file),
-            summary: summary.to_string(),
-            detail: ChangeDetail::Edit {
-                old: "a".into(),
-                new: "b".into(),
-            },
-            source: ChangeSource::default(),
-        }
-    }
+    use sessionx::event::ChangeDetail;
+    use std::path::Path;
 
     #[test]
     fn styled_lines_preserve_colours_and_gutter() {
@@ -280,34 +402,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_is_a_single_header_line() {
-        let lines = entry_lines(
-            &ev("/wt/src/main.rs", "fn foo()"),
-            Path::new("/wt"),
-            40,
-            false,
-        );
-        assert_eq!(lines.len(), 1, "one row: the time+path header");
-    }
-
-    #[test]
-    fn selected_entry_reverses_its_spans() {
-        let lines = entry_lines(
-            &ev("/wt/src/main.rs", "fn foo()"),
-            Path::new("/wt"),
-            40,
-            true,
-        );
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
-            "selected row should be fully reversed"
-        );
-    }
-
-    #[test]
     fn abbreviate_keeps_short_paths_whole() {
         assert_eq!(abbreviate_path("src/main.rs", 40), "src/main.rs");
     }
@@ -331,6 +425,116 @@ mod tests {
         let out = abbreviate_path("widgets/chronology_bar.rs", 12);
         assert!(out.chars().count() <= 12);
         assert!(out.ends_with(".rs"));
+    }
+
+    #[test]
+    fn stat_bar_splits_green_red_and_pads_empty() {
+        // all adds -> 4 green, 0 red, 0 empty
+        let b = stat_bar(10, 0, 4);
+        assert_eq!(b[0].content.as_ref(), "▰▰▰▰");
+        assert_eq!(b[0].style.fg, Some(Color::Green));
+        assert_eq!(b[1].content.as_ref(), "");
+        assert_eq!(b[2].content.as_ref(), "");
+
+        // mixed -> at least one of each, total width 4
+        let b = stat_bar(3, 1, 4);
+        let g = b[0].content.chars().count();
+        let r = b[1].content.chars().count();
+        let e = b[2].content.chars().count();
+        assert_eq!(g + r + e, 4);
+        assert!(g >= 1 && r >= 1, "both sides represented when both nonzero");
+        assert_eq!(b[1].style.fg, Some(Color::Red));
+        assert_eq!(b[2].style.fg, Some(Color::DarkGray));
+
+        // nothing -> all empty/faint
+        let b = stat_bar(0, 0, 4);
+        assert_eq!(b[2].content.chars().count(), 4);
+    }
+
+    #[test]
+    fn change_counts_counts_added_and_removed() {
+        use sessionx::event::ChangeDetail;
+        assert_eq!(
+            change_counts(&ChangeDetail::Edit {
+                old: "a\nb".into(),
+                new: "x".into()
+            }),
+            (1, 2),
+            "1 added line, 2 removed lines"
+        );
+        assert_eq!(
+            change_counts(&ChangeDetail::Write {
+                head: "a\nb\nc".into()
+            }),
+            (3, 0)
+        );
+        assert_eq!(change_counts(&ChangeDetail::None), (0, 0));
+    }
+
+    #[test]
+    fn header_line_has_caret_path_gauge_and_counts() {
+        let line = header_line("src/app.rs", 16, 3, 2, false, true, true, 44, false);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("▾ src/app.rs"), "expanded caret + path");
+        assert!(text.contains("+16"));
+        assert!(text.contains("-3"));
+        assert!(text.trim_end().ends_with("2"), "edit count right-aligned");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(Color::Cyan),
+            "expanded caret cyan"
+        );
+    }
+
+    #[test]
+    fn folded_header_uses_folded_caret_and_no_del_when_zero() {
+        let line = header_line("Cargo.toml", 1, 0, 1, false, false, false, 44, false);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("▸ Cargo.toml"), "folded caret");
+        assert!(text.contains("+1"));
+        assert!(!text.contains("-0"), "zero removals omitted");
+    }
+
+    #[test]
+    fn new_file_header_shows_new_tag() {
+        let line = header_line("src/theme.rs", 58, 0, 1, true, false, false, 44, false);
+        let new = line.spans.iter().find(|s| s.content.as_ref() == " new");
+        assert!(new.is_some(), "single Write shows ' new'");
+        assert_eq!(new.unwrap().style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn edit_line_connector_time_stats_and_summary() {
+        let line = edit_line(0, 12, 3, "guard repin()", false, false, 44);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.starts_with("  ├ 00:00"),
+            "indent, branch connector, time"
+        );
+        assert!(text.contains("+12"));
+        assert!(text.contains("-3"));
+        assert!(text.contains("guard repin()"));
+    }
+
+    #[test]
+    fn last_edit_uses_corner_connector_and_selection_brightens() {
+        let line = edit_line(0, 4, 0, "cache rows", true, true, 44);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("└ "), "last edit uses corner connector");
+        assert!(!text.contains("-0"), "zero removals omitted");
+        // selected: every span carries the blue selection background.
+        let bg = ratatui::style::Color::Rgb(0x24, 0x30, 0x49);
+        assert!(
+            line.spans.iter().all(|s| s.style.bg == Some(bg)),
+            "selection bar fills the row"
+        );
+        // summary brightened to White when selected.
+        let sum = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "cache rows")
+            .unwrap();
+        assert_eq!(sum.style.fg, Some(Color::White));
     }
 
     #[test]
