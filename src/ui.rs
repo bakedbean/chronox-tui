@@ -39,6 +39,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
+    // The single frame needs room for two border rows + a content row, and a
+    // left border + divider + right border. Below that, just bail gracefully
+    // rather than underflow the frame geometry.
+    if body.height < 3 || body.width < 5 {
+        return;
+    }
+
     let (left, right) = render_frame(f, body, app);
     render_list_inner(f, left, app);
     render_diff_inner(f, right, app);
@@ -66,12 +73,12 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     let y0 = body.y;
     let w = body.width;
     let h = body.height;
-    let right_col = x0 + w - 1;
+    let right_col = (x0 + w).saturating_sub(1);
     // Divider column: list_width cells in from the left edge (matches the mouse
     // hit-test in input.rs, which uses last_area.x + list_width).
-    let dx = (x0 + app.list_width)
-        .min(right_col.saturating_sub(1))
-        .max(x0 + 1);
+    let lo = x0 + 1;
+    let hi = right_col.saturating_sub(1).max(lo);
+    let dx = (x0 + app.list_width).clamp(lo, hi);
 
     let left_title = "chronox · by file";
     let right_title = match app.selected_event() {
@@ -90,7 +97,7 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     //
     //   left segment  (exactly `left_seg_w` cols):  "┌─ " <title> " " ──…
     //   right segment (exactly `right_seg_w` cols): "┬─ " <title> " " ──… "┐"
-    let left_seg_w = (dx - x0) as usize;
+    let left_seg_w = (dx.saturating_sub(x0)) as usize;
     let title_budget = left_seg_w.saturating_sub(4); // "┌─ " (3) + trailing " " (1)
     let lt: String = left_title.chars().take(title_budget).collect();
     let fill_left = left_seg_w.saturating_sub(3 + lt.chars().count() + 1);
@@ -101,7 +108,7 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
         Span::styled("─".repeat(fill_left), faint),
     ];
 
-    let right_seg_w = (right_col - dx + 1) as usize;
+    let right_seg_w = (right_col + 1).saturating_sub(dx) as usize;
     let rtitle_budget = right_seg_w.saturating_sub(5); // "┬─ " (3) + " " (1) + "┐" (1)
     let rt: String = right_title.chars().take(rtitle_budget).collect();
     let fill_right = right_seg_w.saturating_sub(3 + rt.chars().count() + 1 + 1);
@@ -114,16 +121,19 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
 
     // ── bottom border: └─...─┴─...─┘ ──────────────────────────────────────
     let mut bottom: Vec<Span> = vec![Span::styled("└", faint)];
-    bottom.push(Span::styled("─".repeat((dx - x0 - 1) as usize), faint));
+    bottom.push(Span::styled(
+        "─".repeat(dx.saturating_sub(x0 + 1) as usize),
+        faint,
+    ));
     bottom.push(Span::styled("┴", faint));
     bottom.push(Span::styled(
-        "─".repeat((right_col - dx - 1) as usize),
+        "─".repeat(right_col.saturating_sub(dx + 1) as usize),
         faint,
     ));
     bottom.push(Span::styled("┘", faint));
     f.render_widget(
         Paragraph::new(Line::from(bottom)),
-        Rect::new(x0, y0 + h - 1, w, 1),
+        Rect::new(x0, (y0 + h).saturating_sub(1), w, 1),
     );
 
     // ── side + divider columns for the body rows ──────────────────────────
@@ -134,7 +144,7 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     } else {
         faint
     };
-    for y in (y0 + 1)..(y0 + h - 1) {
+    for y in (y0 + 1)..(y0 + h).saturating_sub(1) {
         let left_edge: Vec<Line> = vec![Line::from(Span::styled("│", faint))];
         f.render_widget(Paragraph::new(left_edge.clone()), Rect::new(x0, y, 1, 1));
         f.render_widget(
@@ -144,8 +154,13 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
         f.render_widget(Paragraph::new(left_edge), Rect::new(right_col, y, 1, 1));
     }
 
-    let left = Rect::new(x0 + 1, y0 + 1, dx - x0 - 1, h - 2);
-    let right = Rect::new(dx + 1, y0 + 1, right_col - dx - 1, h - 2);
+    let left = Rect::new(x0 + 1, y0 + 1, dx.saturating_sub(x0 + 1), h.saturating_sub(2));
+    let right = Rect::new(
+        dx + 1,
+        y0 + 1,
+        right_col.saturating_sub(dx + 1),
+        h.saturating_sub(2),
+    );
     (left, right)
 }
 
@@ -522,5 +537,21 @@ mod tests {
         let buf = draw_app(&mut app, 80, 12);
         let text = buffer_text(&buf);
         assert!(text.contains("- old") && text.contains("+ new"));
+    }
+
+    #[test]
+    fn draw_does_not_panic_at_tiny_sizes() {
+        // Regression: render_frame underflowed u16 subtractions at small bodies.
+        for w in 1u16..=12 {
+            for h in 1u16..=6 {
+                let mut app = App::bare(PathBuf::from("/wt"));
+                app.set_events_for_test_pub(vec![
+                    ev_named("/wt/src/app.rs", 0, 1),
+                    ev_named("/wt/src/ui.rs", 0, 2),
+                ]);
+                // Must not panic at any size.
+                let _ = draw_app(&mut app, w, h);
+            }
+        }
     }
 }
