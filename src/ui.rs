@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::render::{clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line};
 use sessionx::nav::{adjust_scroll, clamp_scroll};
@@ -37,15 +37,108 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let cols = Layout::horizontal([
-        Constraint::Length(app.list_width),
-        Constraint::Length(1), // separator / drag handle
-        Constraint::Min(0),
-    ])
-    .split(body);
-    render_list(f, cols[0], app);
-    render_separator(f, cols[1], app);
-    render_diff(f, cols[2], app);
+    let (left, right) = render_frame(f, body, app);
+    render_list_inner(f, left, app);
+    render_diff_inner(f, right, app);
+}
+
+fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
+    let faint = Style::default().fg(Color::DarkGray);
+    let list_focus = app.focus == Focus::List;
+    let left_title_style = if list_focus {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let right_title_style = if list_focus {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    };
+
+    let x0 = body.x;
+    let y0 = body.y;
+    let w = body.width;
+    let h = body.height;
+    let right_col = x0 + w - 1;
+    // Divider column: list_width cells in from the left edge (matches the mouse
+    // hit-test in input.rs, which uses last_area.x + list_width).
+    let dx = (x0 + app.list_width).min(right_col.saturating_sub(1)).max(x0 + 1);
+
+    let left_title = "chronox · by file";
+    let right_title = match app.selected_event() {
+        Some(ev) => format!(
+            "{} · {}",
+            relative_display(&ev.file_path, &app.worktree),
+            ev.tool.label()
+        ),
+        None => "—".to_string(),
+    };
+
+    // ── top border ────────────────────────────────────────────────────────
+    // Built as two fixed-width segments so the `┬` always lands exactly on the
+    // divider column `dx` (matching the bottom border and the body divider),
+    // regardless of title length. Titles are clipped to their segment width.
+    //
+    //   left segment  (exactly `left_seg_w` cols):  "┌─ " <title> " " ──…
+    //   right segment (exactly `right_seg_w` cols): "┬─ " <title> " " ──… "┐"
+    let left_seg_w = (dx - x0) as usize;
+    let title_budget = left_seg_w.saturating_sub(4); // "┌─ " (3) + trailing " " (1)
+    let lt: String = left_title.chars().take(title_budget).collect();
+    let fill_left = left_seg_w.saturating_sub(3 + lt.chars().count() + 1);
+    let mut top: Vec<Span> = vec![
+        Span::styled("┌─ ", faint),
+        Span::styled(lt, left_title_style),
+        Span::styled(" ", faint),
+        Span::styled("─".repeat(fill_left), faint),
+    ];
+
+    let right_seg_w = (right_col - dx + 1) as usize;
+    let rtitle_budget = right_seg_w.saturating_sub(5); // "┬─ " (3) + " " (1) + "┐" (1)
+    let rt: String = right_title.chars().take(rtitle_budget).collect();
+    let fill_right = right_seg_w.saturating_sub(3 + rt.chars().count() + 1 + 1);
+    top.push(Span::styled("┬─ ", faint));
+    top.push(Span::styled(rt, right_title_style));
+    top.push(Span::styled(" ", faint));
+    top.push(Span::styled("─".repeat(fill_right), faint));
+    top.push(Span::styled("┐", faint));
+    f.render_widget(Paragraph::new(Line::from(top)), Rect::new(x0, y0, w, 1));
+
+    // ── bottom border: └─...─┴─...─┘ ──────────────────────────────────────
+    let mut bottom: Vec<Span> = vec![Span::styled("└", faint)];
+    bottom.push(Span::styled("─".repeat((dx - x0 - 1) as usize), faint));
+    bottom.push(Span::styled("┴", faint));
+    bottom.push(Span::styled("─".repeat((right_col - dx - 1) as usize), faint));
+    bottom.push(Span::styled("┘", faint));
+    f.render_widget(
+        Paragraph::new(Line::from(bottom)),
+        Rect::new(x0, y0 + h - 1, w, 1),
+    );
+
+    // ── side + divider columns for the body rows ──────────────────────────
+    let divider_style = if app.resizing {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else {
+        faint
+    };
+    for y in (y0 + 1)..(y0 + h - 1) {
+        let left_edge: Vec<Line> = vec![Line::from(Span::styled("│", faint))];
+        f.render_widget(Paragraph::new(left_edge.clone()), Rect::new(x0, y, 1, 1));
+        f.render_widget(
+            Paragraph::new(vec![Line::from(Span::styled("│", divider_style))]),
+            Rect::new(dx, y, 1, 1),
+        );
+        f.render_widget(
+            Paragraph::new(left_edge),
+            Rect::new(right_col, y, 1, 1),
+        );
+    }
+
+    let left = Rect::new(x0 + 1, y0 + 1, dx - x0 - 1, h - 2);
+    let right = Rect::new(dx + 1, y0 + 1, right_col - dx - 1, h - 2);
+    (left, right)
 }
 
 const SPINNER: [&str; 9] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇"];
@@ -95,25 +188,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn pane_block(title: &str, focused: bool) -> Block<'static> {
-    let border_style = if focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_style)
-        .title(Span::styled(format!(" {title} "), border_style))
-}
-
-fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
-    let block = pane_block("chronox · by file", app.focus == Focus::List);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+fn render_list_inner(f: &mut Frame, inner: Rect, app: &mut App) {
     let rows = inner.height as usize;
     let len = app.visible().len();
     let scroll = clamp_scroll(
@@ -166,34 +241,7 @@ fn render_list(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_separator(f: &mut Frame, area: Rect, app: &App) {
-    let style = if app.resizing {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(Span::styled("│", style)))
-        .collect();
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-fn render_diff(f: &mut Frame, area: Rect, app: &mut App) {
-    let focused = app.focus == Focus::Diff;
-    let header = match app.selected_event() {
-        Some(ev) => format!(
-            "{} · {}",
-            relative_display(&ev.file_path, &app.worktree),
-            ev.tool.label()
-        ),
-        None => "—".to_string(),
-    };
-    let block = pane_block(&header, focused);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
+fn render_diff_inner(f: &mut Frame, inner: Rect, app: &mut App) {
     match app.diff_view {
         DiffView::Block => render_diff_block(f, inner, app),
         DiffView::SideBySide => render_diff_side_by_side(f, inner, app),
@@ -324,13 +372,26 @@ mod tests {
     }
 
     #[test]
-    fn two_pane_layout_places_separator_at_list_width() {
+    fn single_frame_has_top_and_bottom_divider_junctions() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
-        app.list_width = 20;
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
+        app.list_width = 30;
         let buf = draw_app(&mut app, 80, 12);
-        // Body starts at y=1 (after the title row); separator column == list_width.
-        assert_eq!(buf[(20u16, 3u16)].symbol(), "│");
+        // Status strip is y=0; the body frame spans y=1..=10, footer y=11.
+        // Divider column = body.x + list_width = 30.
+        assert_eq!(buf[(30u16, 1u16)].symbol(), "┬", "top divider junction");
+        assert_eq!(buf[(30u16, 10u16)].symbol(), "┴", "bottom divider junction");
+        assert_eq!(buf[(30u16, 5u16)].symbol(), "│", "divider body");
+    }
+
+    #[test]
+    fn frame_titles_label_both_panes() {
+        let mut app = App::bare(PathBuf::from("/wt"));
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
+        let buf = draw_app(&mut app, 80, 12);
+        let top: String = (0..80u16).map(|x| buf[(x, 1u16)].symbol()).collect();
+        assert!(top.contains("chronox · by file"), "left title");
+        assert!(top.contains("main.rs"), "right title shows the file");
     }
 
     #[test]
@@ -352,13 +413,13 @@ mod tests {
     }
 
     #[test]
-    fn focus_indicator_colors_active_pane_border() {
+    fn focused_pane_title_is_cyan() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        app.set_events_for_test_pub(vec![ev("/wt/src/main.rs")]);
+        app.set_events_for_test_pub(vec![ev_named("/wt/src/main.rs", 0, 1)]);
         app.focus = Focus::List;
         let buf = draw_app(&mut app, 80, 12);
-        // List block top-left corner is at (0, 1) — under the title row.
-        assert_eq!(buf[(0u16, 1u16)].fg, Color::Cyan);
+        // The left title 'chronox · by file' starts at column 3 of the top row.
+        assert_eq!(buf[(3u16, 1u16)].fg, Color::Cyan);
     }
 
     #[test]
