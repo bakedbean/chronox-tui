@@ -63,6 +63,116 @@ pub fn stat_bar(add: u32, del: u32, width: usize) -> Vec<Span<'static>> {
     ]
 }
 
+/// Pad a span list to `width` columns; when `selected`, fill the row with the
+/// blue selection background. Char-based width (matches `clip_line_to_width`).
+fn finish(mut spans: Vec<Span<'static>>, width: u16, selected: bool) -> Line<'static> {
+    let width = width as usize;
+    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if used < width {
+        spans.push(Span::raw(" ".repeat(width - used)));
+    }
+    if selected {
+        let bg = Color::Rgb(0x24, 0x30, 0x49);
+        for s in &mut spans {
+            s.style = s.style.bg(bg);
+        }
+    }
+    Line::from(spans)
+}
+
+/// A grouped file-header row: `<caret><path>[ new]<pad><gauge> +A[ -D]<pad><count>`.
+#[allow(clippy::too_many_arguments)]
+pub fn header_line(
+    file_rel: &str,
+    add: u32,
+    del: u32,
+    count: usize,
+    is_new: bool,
+    expanded: bool,
+    active: bool,
+    width: u16,
+    selected: bool,
+) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let (caret, caret_style) = if expanded {
+        ("▾ ", Style::default().fg(Color::Cyan))
+    } else {
+        ("▸ ", dim)
+    };
+    let path_style = if active {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    // Right block: gauge + " " + "+A" [+ " -D"] + "  count".
+    let mut right = stat_bar(add, del, 4);
+    right.push(Span::raw(" "));
+    right.push(Span::styled(format!("+{add}"), Style::default().fg(Color::Green)));
+    if del > 0 {
+        right.push(Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)));
+    }
+    right.push(Span::styled(format!("  {count}"), dim));
+    let right_len: usize = right.iter().map(|s| s.content.chars().count()).sum();
+
+    let new_len = if is_new { 4 } else { 0 }; // " new"
+    let caret_len = 2;
+    let budget = (width as usize)
+        .saturating_sub(caret_len + new_len + right_len + 1);
+    let path = abbreviate_path(file_rel, budget);
+
+    let left_len = caret_len + path.chars().count() + new_len;
+    let gap = (width as usize)
+        .saturating_sub(left_len + right_len)
+        .max(1);
+
+    let mut spans = vec![
+        Span::styled(caret, caret_style),
+        Span::styled(path, path_style),
+    ];
+    if is_new {
+        spans.push(Span::styled(" new", Style::default().fg(Color::Blue)));
+    }
+    spans.push(Span::raw(" ".repeat(gap)));
+    spans.extend(right);
+    finish(spans, width, selected)
+}
+
+/// A nested edit row under the active file:
+/// `  <connector> <HH:MM>  +a[ -d]  <summary>`.
+pub fn edit_line(
+    timestamp_ms: i64,
+    add: u32,
+    del: u32,
+    summary: &str,
+    last: bool,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
+    let faint = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let connector = if last { "└ " } else { "├ " };
+    let summary_style = if selected {
+        Style::default().fg(Color::White)
+    } else {
+        dim
+    };
+
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(connector, faint),
+        Span::styled(hhmm(timestamp_ms), dim),
+        Span::raw("  "),
+        Span::styled(format!("+{add}"), Style::default().fg(Color::Green)),
+    ];
+    if del > 0 {
+        spans.push(Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)));
+    }
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled(summary.to_string(), summary_style));
+    finish(spans, width, selected)
+}
+
 fn token_spans(code: &[Token]) -> Vec<Span<'static>> {
     code.iter()
         .map(|(t, k)| Span::styled(t.clone(), style_for(*k)))
@@ -417,6 +527,61 @@ mod tests {
             (3, 0)
         );
         assert_eq!(change_counts(&ChangeDetail::None), (0, 0));
+    }
+
+    #[test]
+    fn header_line_has_caret_path_gauge_and_counts() {
+        let line = header_line("src/app.rs", 16, 3, 2, false, true, true, 44, false);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("▾ src/app.rs"), "expanded caret + path");
+        assert!(text.contains("+16"));
+        assert!(text.contains("-3"));
+        assert!(text.trim_end().ends_with("2"), "edit count right-aligned");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan), "expanded caret cyan");
+    }
+
+    #[test]
+    fn folded_header_uses_folded_caret_and_no_del_when_zero() {
+        let line = header_line("Cargo.toml", 1, 0, 1, false, false, false, 44, false);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("▸ Cargo.toml"), "folded caret");
+        assert!(text.contains("+1"));
+        assert!(!text.contains("-0"), "zero removals omitted");
+    }
+
+    #[test]
+    fn new_file_header_shows_new_tag() {
+        let line = header_line("src/theme.rs", 58, 0, 1, true, false, false, 44, false);
+        let new = line.spans.iter().find(|s| s.content.as_ref() == " new");
+        assert!(new.is_some(), "single Write shows ' new'");
+        assert_eq!(new.unwrap().style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn edit_line_connector_time_stats_and_summary() {
+        let line = edit_line(0, 12, 3, "guard repin()", false, false, 44);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("  ├ 00:00"), "indent, branch connector, time");
+        assert!(text.contains("+12"));
+        assert!(text.contains("-3"));
+        assert!(text.contains("guard repin()"));
+    }
+
+    #[test]
+    fn last_edit_uses_corner_connector_and_selection_brightens() {
+        let line = edit_line(0, 4, 0, "cache rows", true, true, 44);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("└ "), "last edit uses corner connector");
+        assert!(!text.contains("-0"), "zero removals omitted");
+        // selected: every span carries the blue selection background.
+        let bg = ratatui::style::Color::Rgb(0x24, 0x30, 0x49);
+        assert!(
+            line.spans.iter().all(|s| s.style.bg == Some(bg)),
+            "selection bar fills the row"
+        );
+        // summary brightened to White when selected.
+        let sum = line.spans.iter().find(|s| s.content.as_ref() == "cache rows").unwrap();
+        assert_eq!(sum.style.fg, Some(Color::White));
     }
 
     #[test]
