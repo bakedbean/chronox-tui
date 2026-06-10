@@ -1,4 +1,4 @@
-//! App state and transitions for chronox-tui. All state changes go through
+//! App state and transitions for chronox. All state changes go through
 //! `App::apply`. Timeline parsing, navigation, and styled rendering are
 //! delegated to the `sessionx` crate; this module is the shell around them.
 

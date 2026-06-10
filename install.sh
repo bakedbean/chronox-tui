@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Build chronox-tui in release mode and symlink it onto your PATH at
-# ~/.local/bin/chronox-tui, so you can run `chronox-tui` from any directory.
+# Build chronox in release mode and symlink it onto your PATH at
+# ~/.local/bin/chronox, so you can run `chronox` from any directory.
 #
 # The symlink points at this repo's target/release build, so it stays valid
 # across git pulls — just re-run `cargo build --release` (or this script) to
@@ -15,10 +15,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${BIN_DIR:-$HOME/.local/bin}"
-target="$repo_root/target/release/chronox-tui"
-link="$bin_dir/chronox-tui"
+target="$repo_root/target/release/chronox"
+link="$bin_dir/chronox"
 
-echo "Building chronox-tui (release)…"
+echo "Building chronox (release)…"
 cargo build --release --manifest-path "$repo_root/Cargo.toml"
 
 mkdir -p "$bin_dir"
@@ -31,4 +31,4 @@ case ":$PATH:" in
      echo "  export PATH=\"$bin_dir:\$PATH\"" ;;
 esac
 
-echo "Done. Run 'chronox-tui' or 'chronox-tui /path/to/worktree'."
+echo "Done. Run 'chronox' or 'chronox /path/to/worktree'."
