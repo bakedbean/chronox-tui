@@ -10,8 +10,8 @@ use crate::render::change_detail_lines_styled;
 use sessionx::extract::{claude_session_files, load_full_change, resolve_line_in_file};
 use sessionx::nav::nav;
 use sessionx::{
-    ChangeEvent, ChangeSource, NavAction, NavKey, SideRow, Timeline, change_detail_side_by_side,
-    lang_for_path,
+    ChangeEvent, ChangeSource, ChangeTool, NavAction, NavKey, SideRow, Timeline,
+    change_detail_side_by_side, lang_for_path,
 };
 
 /// Default columns for the left (list) pane.
@@ -53,6 +53,50 @@ pub enum AppAction {
     OpenInEditor,
     Tick,
     None,
+}
+
+/// One file's worth of changes, newest-first, with rolled-up line counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileGroup {
+    pub file: PathBuf,
+    pub event_idxs: Vec<usize>, // newest-first, into App.events
+    pub add: u32,
+    pub del: u32,
+    pub is_new: bool, // single Write -> " new" tag
+}
+
+/// A row in the rendered list: a file header (always shown) or an edit row
+/// (shown only under the active/expanded file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisibleRow {
+    Header { group: usize }, // index into `groups`
+    Edit { event: usize },   // index into App.events
+}
+
+/// Group `events` by `file_path`, preserving first-seen order. Because the
+/// timeline is newest-first, this yields most-recently-touched file first with
+/// edits newest-first inside each group. `counts[i]` is event `i`'s (add, del).
+fn build_groups(events: &[ChangeEvent], counts: &[(u32, u32)]) -> Vec<FileGroup> {
+    let mut groups: Vec<FileGroup> = Vec::new();
+    for (i, ev) in events.iter().enumerate() {
+        let (a, d) = counts.get(i).copied().unwrap_or((0, 0));
+        match groups.iter_mut().find(|g| g.file == ev.file_path) {
+            Some(g) => {
+                g.event_idxs.push(i);
+                g.add += a;
+                g.del += d;
+                g.is_new = false; // more than one change -> not a fresh new file
+            }
+            None => groups.push(FileGroup {
+                file: ev.file_path.clone(),
+                event_idxs: vec![i],
+                add: a,
+                del: d,
+                is_new: ev.tool == ChangeTool::Write,
+            }),
+        }
+    }
+    groups
 }
 
 pub struct App {
@@ -339,6 +383,21 @@ mod tests {
     use super::*;
     use sessionx::{ChangeDetail, ChangeTool};
 
+    fn write_ev(ts: i64, file: &str, line_index: usize) -> ChangeEvent {
+        ChangeEvent {
+            timestamp_ms: ts,
+            tool: ChangeTool::Write,
+            file_path: PathBuf::from(file),
+            summary: String::new(),
+            detail: ChangeDetail::Write { head: "x".into() },
+            source: ChangeSource {
+                session_file: PathBuf::from("s.jsonl"),
+                line_index,
+                index_in_line: 0,
+            },
+        }
+    }
+
     fn ev(ts: i64, file: &str, line_index: usize) -> ChangeEvent {
         ChangeEvent {
             timestamp_ms: ts,
@@ -572,6 +631,32 @@ mod tests {
     fn diff_side_rows_empty_when_no_events() {
         let mut app = App::bare(PathBuf::from("/wt"));
         assert!(app.diff_side_rows().is_empty());
+    }
+
+    #[test]
+    fn build_groups_orders_by_first_seen_and_rolls_up() {
+        // newest-first input (as sessionx hands us): a, a, b, write-c
+        let events = vec![
+            ev(4, "/wt/a.rs", 1),
+            ev(3, "/wt/a.rs", 2),
+            ev(2, "/wt/b.rs", 3),
+            write_ev(1, "/wt/c.rs", 4),
+        ];
+        // per-event (add, del)
+        let counts = vec![(10, 1), (4, 0), (2, 2), (58, 0)];
+        let groups = build_groups(&events, &counts);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].file, PathBuf::from("/wt/a.rs"));
+        assert_eq!(groups[0].event_idxs, vec![0, 1]);
+        assert_eq!((groups[0].add, groups[0].del), (14, 1));
+        assert!(!groups[0].is_new);
+
+        assert_eq!(groups[1].file, PathBuf::from("/wt/b.rs"));
+        assert_eq!((groups[1].add, groups[1].del), (2, 2));
+
+        assert_eq!(groups[2].file, PathBuf::from("/wt/c.rs"));
+        assert!(groups[2].is_new, "single Write -> new file");
     }
 
     #[test]
