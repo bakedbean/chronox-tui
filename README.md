@@ -1,22 +1,21 @@
-# chronox-tui
+# chronox
 
-A standalone [ratatui](https://ratatui.rs) terminal UI for
-[chronox](https://github.com/bakedbean/chronox): browse the newest-first
-timeline of file changes a Claude Code agent made in a worktree, with a
-syntax-highlighted diff of the selected change. The timeline updates live while
-a session is running.
+A standalone [ratatui](https://ratatui.rs) terminal UI for browsing the
+newest-first timeline of file changes a Claude Code agent made in a worktree,
+with a syntax-highlighted diff of the selected change. The timeline updates live
+while a session is running.
 
 ## Install
 
-To run `chronox-tui` from anywhere, build a release binary and symlink it onto
+To run `chronox` from anywhere, build a release binary and symlink it onto
 your `PATH`:
 
 ```bash
 ./install.sh
 ```
 
-This builds `target/release/chronox-tui` and links it to
-`~/.local/bin/chronox-tui` (override with `BIN_DIR=~/bin ./install.sh`). The
+This builds `target/release/chronox` and links it to
+`~/.local/bin/chronox` (override with `BIN_DIR=~/bin ./install.sh`). The
 symlink points at the build output, so to update after pulling new changes just
 rebuild:
 
@@ -31,11 +30,11 @@ cargo run                      # current directory
 cargo run -- /path/to/worktree # an explicit worktree
 ```
 
-Once installed, `cargo run` becomes just `chronox-tui`:
+Once installed, `cargo run` becomes just `chronox`:
 
 ```bash
-chronox-tui                      # current directory
-chronox-tui /path/to/worktree    # an explicit worktree
+chronox                      # current directory
+chronox /path/to/worktree    # an explicit worktree
 ```
 
 The worktree must have Claude Code session logs
@@ -80,5 +79,5 @@ and opens the file at the changed line using the `+N file` convention
 ## Note on mouse capture
 
 The app captures the mouse (to support drag-resize), so your terminal's native
-text selection needs the usual modifier (often `Shift`) while chronox-tui is
+text selection needs the usual modifier (often `Shift`) while chronox is
 running.

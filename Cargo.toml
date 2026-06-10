@@ -1,5 +1,5 @@
 [package]
-name = "chronox-tui"
+name = "chronox"
 version = "0.1.0"
 edition = "2024"
 description = "A standalone ratatui TUI over the sessionx change timeline."

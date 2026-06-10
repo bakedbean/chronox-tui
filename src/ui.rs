@@ -1,4 +1,4 @@
-//! Drawing for chronox-tui. Reads `App`; the only state it writes back is
+//! Drawing for chronox. Reads `App`; the only state it writes back is
 //! layout-derived (`last_area`, scroll offsets, visible-row counts).
 
 use ratatui::Frame;
