@@ -173,9 +173,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let text: &str = match app.status() {
         Some(status) => status,
         None => match app.focus {
-            Focus::List => " ↑↓ move · e edit · d view · Tab focus diff · [ ] resize · q quit ",
+            Focus::List => " ↑↓ move · enter diff · d view · e edit · tab focus · q quit ",
             Focus::Diff => {
-                " ↑↓/PgUp/PgDn scroll · e edit · d view · Tab focus list · [ ] resize · q quit "
+                " ↑↓/PgUp/PgDn scroll · d view · e edit · tab focus list · q quit "
             }
         },
     };
@@ -395,10 +395,14 @@ mod tests {
     }
 
     #[test]
-    fn footer_advertises_the_edit_key() {
+    fn footer_lists_grouped_timeline_hints() {
         let mut app = App::bare(PathBuf::from("/wt"));
-        let buf = draw_app(&mut app, 80, 10);
-        assert!(buffer_text(&buf).contains("e edit"));
+        let buf = draw_app(&mut app, 100, 10);
+        let text = buffer_text(&buf);
+        assert!(text.contains("enter diff"));
+        assert!(text.contains("e edit"));
+        assert!(text.contains("tab focus"));
+        assert!(!text.contains("space fold"), "no space key in accordion-only mode");
     }
 
     #[test]
