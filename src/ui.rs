@@ -7,7 +7,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::render::{clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line};
+use crate::render::{
+    clip_line_to_width, edit_line, header_line, relative_display, side_cell_to_line,
+};
 use sessionx::nav::{adjust_scroll, clamp_scroll};
 
 use crate::app::{App, DiffView, Focus, VisibleRow};
@@ -46,14 +48,18 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     let faint = Style::default().fg(Color::DarkGray);
     let list_focus = app.focus == Focus::List;
     let left_title_style = if list_focus {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
     let right_title_style = if list_focus {
         Style::default().fg(Color::White)
     } else {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     };
 
     let x0 = body.x;
@@ -63,7 +69,9 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     let right_col = x0 + w - 1;
     // Divider column: list_width cells in from the left edge (matches the mouse
     // hit-test in input.rs, which uses last_area.x + list_width).
-    let dx = (x0 + app.list_width).min(right_col.saturating_sub(1)).max(x0 + 1);
+    let dx = (x0 + app.list_width)
+        .min(right_col.saturating_sub(1))
+        .max(x0 + 1);
 
     let left_title = "chronox · by file";
     let right_title = match app.selected_event() {
@@ -108,7 +116,10 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
     let mut bottom: Vec<Span> = vec![Span::styled("└", faint)];
     bottom.push(Span::styled("─".repeat((dx - x0 - 1) as usize), faint));
     bottom.push(Span::styled("┴", faint));
-    bottom.push(Span::styled("─".repeat((right_col - dx - 1) as usize), faint));
+    bottom.push(Span::styled(
+        "─".repeat((right_col - dx - 1) as usize),
+        faint,
+    ));
     bottom.push(Span::styled("┘", faint));
     f.render_widget(
         Paragraph::new(Line::from(bottom)),
@@ -130,10 +141,7 @@ fn render_frame(f: &mut Frame, body: Rect, app: &App) -> (Rect, Rect) {
             Paragraph::new(vec![Line::from(Span::styled("│", divider_style))]),
             Rect::new(dx, y, 1, 1),
         );
-        f.render_widget(
-            Paragraph::new(left_edge),
-            Rect::new(right_col, y, 1, 1),
-        );
+        f.render_widget(Paragraph::new(left_edge), Rect::new(right_col, y, 1, 1));
     }
 
     let left = Rect::new(x0 + 1, y0 + 1, dx - x0 - 1, h - 2);
@@ -145,7 +153,9 @@ const SPINNER: [&str; 9] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 fn render_status_strip(f: &mut Frame, area: Rect, app: &App) {
     let green = Style::default().fg(Color::Green);
-    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
     let (add, del) = app.session_totals();
     let n = app.events().len();
     let m = app.groups().len();
@@ -174,9 +184,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         Some(status) => status,
         None => match app.focus {
             Focus::List => " ↑↓ move · enter diff · d view · e edit · tab focus · q quit ",
-            Focus::Diff => {
-                " ↑↓/PgUp/PgDn scroll · d view · e edit · tab focus list · q quit "
-            }
+            Focus::Diff => " ↑↓/PgUp/PgDn scroll · d view · e edit · tab focus list · q quit ",
         },
     };
     f.render_widget(
@@ -402,7 +410,10 @@ mod tests {
         assert!(text.contains("enter diff"));
         assert!(text.contains("e edit"));
         assert!(text.contains("tab focus"));
-        assert!(!text.contains("space fold"), "no space key in accordion-only mode");
+        assert!(
+            !text.contains("space fold"),
+            "no space key in accordion-only mode"
+        );
     }
 
     #[test]
@@ -482,7 +493,10 @@ mod tests {
         assert!(text.contains("src/app.rs"), "file header rendered");
         assert!(text.contains("▾"), "active file expanded");
         assert!(text.contains("▸"), "other file folded");
-        assert!(text.contains("tweak the thing"), "active file's edit summary shown");
+        assert!(
+            text.contains("tweak the thing"),
+            "active file's edit summary shown"
+        );
     }
 
     #[test]

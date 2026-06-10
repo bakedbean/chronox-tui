@@ -239,9 +239,7 @@ impl App {
     /// Which group a target belongs to (0 if not found / no target).
     fn group_for_target(&self, target: &Option<SelTarget>) -> usize {
         match target {
-            Some(SelTarget::File(p)) => {
-                self.groups.iter().position(|g| &g.file == p).unwrap_or(0)
-            }
+            Some(SelTarget::File(p)) => self.groups.iter().position(|g| &g.file == p).unwrap_or(0),
             Some(SelTarget::Edit(src)) => self
                 .groups
                 .iter()
@@ -292,8 +290,9 @@ impl App {
         for i in 0..self.events.len() {
             self.ensure_count(i);
         }
-        let counts: Vec<(u32, u32)> =
-            (0..self.events.len()).map(|i| self.event_counts(i)).collect();
+        let counts: Vec<(u32, u32)> = (0..self.events.len())
+            .map(|i| self.event_counts(i))
+            .collect();
         self.groups = build_groups(&self.events, &counts);
         self.active_group = self.group_for_target(&target);
         self.visible = build_visible(&self.groups, self.active_group);
@@ -307,9 +306,7 @@ impl App {
     pub fn selected_event_idx(&self) -> Option<usize> {
         match self.visible.get(self.selected)? {
             VisibleRow::Edit { event } => Some(*event),
-            VisibleRow::Header { group } => {
-                self.groups.get(*group)?.event_idxs.first().copied()
-            }
+            VisibleRow::Header { group } => self.groups.get(*group)?.event_idxs.first().copied(),
         }
     }
 
@@ -480,7 +477,9 @@ impl App {
         // Safe to key on ChangeSource: Claude Code session logs are append-only,
         // so a given (file, line, index) is written once and never mutated.
         let idx = self.selected_event_idx();
-        let src = idx.and_then(|i| self.events.get(i)).map(|e| e.source.clone());
+        let src = idx
+            .and_then(|i| self.events.get(i))
+            .map(|e| e.source.clone());
         let needs = match (&self.diff_cache, &src) {
             (Some((cached, _)), Some(s)) => cached != s,
             _ => true,
@@ -507,7 +506,9 @@ impl App {
     /// selected change's `ChangeSource` (mirrors `diff_lines`).
     pub fn diff_side_rows(&mut self) -> &[SideRow] {
         let idx = self.selected_event_idx();
-        let src = idx.and_then(|i| self.events.get(i)).map(|e| e.source.clone());
+        let src = idx
+            .and_then(|i| self.events.get(i))
+            .map(|e| e.source.clone());
         let needs = match (&self.side_cache, &src) {
             (Some((cached, _)), Some(s)) => cached != s,
             _ => true,

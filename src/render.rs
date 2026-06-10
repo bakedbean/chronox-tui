@@ -92,14 +92,18 @@ pub fn header_line(
     width: u16,
     selected: bool,
 ) -> Line<'static> {
-    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
     let (caret, caret_style) = if expanded {
         ("▾ ", Style::default().fg(Color::Cyan))
     } else {
         ("▸ ", dim)
     };
     let path_style = if active {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
@@ -107,23 +111,26 @@ pub fn header_line(
     // Right block: gauge + " " + "+A" [+ " -D"] + "  count".
     let mut right = stat_bar(add, del, 4);
     right.push(Span::raw(" "));
-    right.push(Span::styled(format!("+{add}"), Style::default().fg(Color::Green)));
+    right.push(Span::styled(
+        format!("+{add}"),
+        Style::default().fg(Color::Green),
+    ));
     if del > 0 {
-        right.push(Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)));
+        right.push(Span::styled(
+            format!(" -{del}"),
+            Style::default().fg(Color::Red),
+        ));
     }
     right.push(Span::styled(format!("  {count}"), dim));
     let right_len: usize = right.iter().map(|s| s.content.chars().count()).sum();
 
     let new_len = if is_new { 4 } else { 0 }; // " new"
     let caret_len = 2;
-    let budget = (width as usize)
-        .saturating_sub(caret_len + new_len + right_len + 1);
+    let budget = (width as usize).saturating_sub(caret_len + new_len + right_len + 1);
     let path = abbreviate_path(file_rel, budget);
 
     let left_len = caret_len + path.chars().count() + new_len;
-    let gap = (width as usize)
-        .saturating_sub(left_len + right_len)
-        .max(1);
+    let gap = (width as usize).saturating_sub(left_len + right_len).max(1);
 
     let mut spans = vec![
         Span::styled(caret, caret_style),
@@ -149,7 +156,9 @@ pub fn edit_line(
     width: u16,
 ) -> Line<'static> {
     let faint = Style::default().fg(Color::DarkGray);
-    let dim = Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM);
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
     let connector = if last { "└ " } else { "├ " };
     let summary_style = if selected {
         Style::default().fg(Color::White)
@@ -165,7 +174,10 @@ pub fn edit_line(
         Span::styled(format!("+{add}"), Style::default().fg(Color::Green)),
     ];
     if del > 0 {
-        spans.push(Span::styled(format!(" -{del}"), Style::default().fg(Color::Red)));
+        spans.push(Span::styled(
+            format!(" -{del}"),
+            Style::default().fg(Color::Red),
+        ));
     }
     spans.push(Span::raw("  "));
     spans.push(Span::styled(summary.to_string(), summary_style));
@@ -467,7 +479,11 @@ mod tests {
         assert!(text.contains("+16"));
         assert!(text.contains("-3"));
         assert!(text.trim_end().ends_with("2"), "edit count right-aligned");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Cyan), "expanded caret cyan");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(Color::Cyan),
+            "expanded caret cyan"
+        );
     }
 
     #[test]
@@ -491,7 +507,10 @@ mod tests {
     fn edit_line_connector_time_stats_and_summary() {
         let line = edit_line(0, 12, 3, "guard repin()", false, false, 44);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.starts_with("  ├ 00:00"), "indent, branch connector, time");
+        assert!(
+            text.starts_with("  ├ 00:00"),
+            "indent, branch connector, time"
+        );
         assert!(text.contains("+12"));
         assert!(text.contains("-3"));
         assert!(text.contains("guard repin()"));
@@ -510,7 +529,11 @@ mod tests {
             "selection bar fills the row"
         );
         // summary brightened to White when selected.
-        let sum = line.spans.iter().find(|s| s.content.as_ref() == "cache rows").unwrap();
+        let sum = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "cache rows")
+            .unwrap();
         assert_eq!(sum.style.fg, Some(Color::White));
     }
 
